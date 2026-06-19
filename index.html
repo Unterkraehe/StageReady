@@ -378,6 +378,27 @@ textarea.notes-area:focus{border-color:var(--accent)}
 .flex{display:flex}.gap8{gap:8px}.mt8{margin-top:8px}.mt12{margin-top:12px}
 .muted{color:var(--txt-3)}
 .center{text-align:center}
+/* ===================== PROGRESS OVERLAY ===================== */
+#progressOverlay{position:fixed;inset:0;z-index:120;display:grid;place-items:center;
+  background:rgba(0,0,0,.62);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px)}
+#progressOverlay.hidden{display:none}
+.prog-card{background:var(--bg-2);border:1px solid var(--line);border-radius:var(--r-lg);
+  padding:26px 30px;min-width:230px;max-width:80vw;display:flex;flex-direction:column;align-items:center;
+  box-shadow:0 24px 60px rgba(0,0,0,.5)}
+.prog-ring-wrap{position:relative;width:96px;height:96px}
+.prog-ring{width:96px;height:96px;transform:rotate(-90deg)}
+.prog-ring .prog-bg{fill:none;stroke:var(--bg-4);stroke-width:8}
+.prog-ring .prog-fg{fill:none;stroke:var(--accent);stroke-width:8;stroke-linecap:round;
+  stroke-dasharray:276.46;stroke-dashoffset:276.46;transition:stroke-dashoffset .18s ease}
+.prog-pct{position:absolute;inset:0;display:grid;place-items:center;
+  font-family:var(--font-display);font-weight:600;font-size:22px;color:var(--txt)}
+#progressOverlay.indeterminate .prog-ring{animation:spin 1s linear infinite}
+#progressOverlay.indeterminate .prog-fg{stroke-dasharray:120 200;transition:none}
+#progressOverlay.indeterminate .prog-pct{display:none}
+.prog-title{font-family:var(--font-display);font-weight:600;letter-spacing:.04em;font-size:18px;
+  margin-top:16px;text-align:center}
+.prog-sub{font-family:var(--font-body);color:var(--txt-3);font-size:13px;margin-top:4px;
+  text-align:center;max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* ===================== PRINT ===================== */
 #printRoot{display:none}
 @media print{
@@ -632,6 +653,21 @@ textarea.notes-area:focus{border-color:var(--accent)}
 <!-- ===================== MODAL + TOAST ===================== -->
 <div id="modalScrim"><div class="modal" id="modal"></div></div>
 <div id="toast"></div>
+
+<!-- ===================== PROGRESS OVERLAY ===================== -->
+<div id="progressOverlay" class="hidden" aria-live="polite">
+  <div class="prog-card">
+    <div class="prog-ring-wrap">
+      <svg class="prog-ring" viewBox="0 0 100 100">
+        <circle class="prog-bg" cx="50" cy="50" r="44"/>
+        <circle class="prog-fg" cx="50" cy="50" r="44"/>
+      </svg>
+      <div class="prog-pct">0%</div>
+    </div>
+    <div class="prog-title">Working…</div>
+    <div class="prog-sub"></div>
+  </div>
+</div>
 
 <!-- hidden inputs -->
 <input type="file" id="audioFileInput" accept="audio/*" class="hidden">
@@ -1199,62 +1235,128 @@ $('#speedSlider').addEventListener('input',e=>{
 });
 
 /* ---------- pitch shift (semitones, independent of tempo) ----------
-   Granular dual-grain shifter on a MediaElementSource. The <audio>
-   element keeps tempo/seek/loop; this only re-pitches the stream.
-   read advances at ratio = 2^(semitones/12) while output rate is fixed,
-   so tempo is unchanged. Two Hann-windowed grains (50% overlap) mask
-   the grain resets.  */
-const pitch={ src:null, node:null, on:false, ratio:1, semis:0, built:false,
+   Granular dual-grain shifter inserted on a MediaElementSource. The
+   <audio> element keeps tempo/seek/loop; this only re-pitches the stream
+   (read pointer advances at ratio = 2^(semitones/12), output rate fixed,
+   so tempo is unchanged). Two grains at 50% offset with an EQUAL-POWER
+   crossfade hide the grain resets. Processing runs in an AudioWorklet
+   (audio-render thread) so UI work never starves it → no stutter; an
+   older-browser ScriptProcessor fallback uses the same maths.  */
+const PITCH_WORKLET_SRC = `
+class PitchProcessor extends AudioWorkletProcessor {
+  static get parameterDescriptors(){ return [{name:'ratio',defaultValue:1,minValue:0.25,maxValue:4,automationRate:'k-rate'}]; }
+  constructor(){
+    super();
+    const sr = sampleRate;
+    this.g = Math.round(0.092*sr);                 // ~92ms grains (lower flutter rate)
+    this.L = this.g*2 + Math.round(0.18*sr);
+    this.r0 = new Float32Array(this.L);
+    this.r1 = new Float32Array(this.L);
+    this.w = 0; this.n = 0;
+  }
+  smp(buf,pos){ const L=this.L; let x=pos; if(x<0)x+=L; if(x>=L)x-=L; const i0=x|0; let i1=i0+1; if(i1>=L)i1=0; const f=x-i0; return buf[i0]+(buf[i1]-buf[i0])*f; }
+  process(inputs,outputs,parameters){
+    const inp=inputs[0], out=outputs[0];
+    const outL=out[0], outR=out[1]||out[0];
+    const N=outL.length;
+    const hasIn = inp && inp.length>0 && inp[0] && inp[0].length>0;
+    const inL = hasIn?inp[0]:null, inR = hasIn?(inp[1]||inp[0]):null;
+    const R = parameters.ratio.length>0?parameters.ratio[0]:1;
+    const r0=this.r0, r1=this.r1, L=this.L, g=this.g, PI=Math.PI;
+    const up = R>1, depth = Math.abs(1-R)*g, OUT=0.9;
+    let w=this.w, n=this.n;
+    for(let i=0;i<N;i++){
+      const sL = inL?inL[i]:0, sR = inR?inR[i]:sL;
+      r0[w]=sL; r1[w]=sR;
+      const p=n/g; let pB=p+0.5; if(pB>=1)pB-=1;
+      const dA = up? depth*(1-p) : depth*p;
+      const dB = up? depth*(1-pB): depth*pB;
+      const eA = Math.sin(PI*p), eB = Math.sin(PI*pB);   // equal power: eA²+eB²=1
+      outL[i] = (this.smp(r0,w-dA)*eA + this.smp(r0,w-dB)*eB)*OUT;
+      outR[i] = (this.smp(r1,w-dA)*eA + this.smp(r1,w-dB)*eB)*OUT;
+      w++; if(w>=L)w=0;
+      n++; if(n>=g)n=0;
+    }
+    this.w=w; this.n=n;
+    return true;
+  }
+}
+registerProcessor('pitch-processor', PitchProcessor);
+`;
+
+const pitch={ src:null, node:null, kind:null, on:false, ratio:1, semis:0,
+  built:false, building:false,
   ring:null, ringL:0, g:0, wIdx:0, n:0, _save:null };
 
-function buildPitchGraph(){
+async function ensurePitchGraph(){
   if(pitch.built) return true;
+  if(pitch.building) return false;
+  pitch.building=true;
   try{
     if(!player.ctx) player.ctx=new (window.AudioContext||window.webkitAudioContext)();
-    const sr=player.ctx.sampleRate;
-    pitch.g=Math.round(0.080*sr);                 // ~80ms grains
-    pitch.ringL=pitch.g*2+Math.round(0.12*sr);
-    pitch.ring=[new Float32Array(pitch.ringL),new Float32Array(pitch.ringL)];
-    pitch.wIdx=0; pitch.n=0;
-    pitch.src=player.ctx.createMediaElementSource(audioEl);
-    const node=player.ctx.createScriptProcessor(2048,2,2);
-    node.onaudioprocess=processPitch;
-    pitch.node=node;
+    if(!pitch.src) pitch.src=player.ctx.createMediaElementSource(audioEl);
+    // keep audio flowing (dry) while the worklet module loads
+    try{ pitch.src.disconnect(); }catch(e){}
+    pitch.src.connect(player.ctx.destination);
+    if(player.ctx.audioWorklet && typeof AudioWorkletNode!=='undefined'){
+      const url=URL.createObjectURL(new Blob([PITCH_WORKLET_SRC],{type:'application/javascript'}));
+      await player.ctx.audioWorklet.addModule(url);
+      URL.revokeObjectURL(url);
+      pitch.node=new AudioWorkletNode(player.ctx,'pitch-processor',
+        {numberOfInputs:1,numberOfOutputs:1,outputChannelCount:[2],channelCount:2,channelCountMode:'explicit'});
+      pitch.kind='worklet';
+    } else {
+      const sr=player.ctx.sampleRate;
+      pitch.g=Math.round(0.092*sr); pitch.ringL=pitch.g*2+Math.round(0.18*sr);
+      pitch.ring=[new Float32Array(pitch.ringL),new Float32Array(pitch.ringL)];
+      pitch.wIdx=0; pitch.n=0;
+      pitch.node=player.ctx.createScriptProcessor(2048,2,2);
+      pitch.node.onaudioprocess=processPitchSP;
+      pitch.kind='sp';
+    }
     pitch.built=true;
-    routePitch();
-    return true;
-  }catch(e){ console.warn('Pitch engine unavailable:',e); pitch.built=false; return false; }
+  }catch(e){ console.warn('Pitch engine unavailable:',e); pitch.built=false; }
+  pitch.building=false;
+  applyRatio(); routePitch();
+  return pitch.built;
 }
 function routePitch(){
-  if(!pitch.built) return;
+  if(!pitch.src) return;
   try{ pitch.src.disconnect(); }catch(e){}
-  try{ pitch.node.disconnect(); }catch(e){}
-  if(pitch.on){ pitch.src.connect(pitch.node); pitch.node.connect(player.ctx.destination); }
+  try{ if(pitch.node) pitch.node.disconnect(); }catch(e){}
+  if(pitch.on && pitch.node){ pitch.src.connect(pitch.node); pitch.node.connect(player.ctx.destination); }
   else { pitch.src.connect(player.ctx.destination); }
+}
+function applyRatio(){
+  if(!pitch.node) return;
+  if(pitch.kind==='worklet'){
+    const p=pitch.node.parameters.get('ratio');
+    if(p){ try{ p.setTargetAtTime(pitch.ratio, player.ctx.currentTime, 0.03); }catch(e){ p.value=pitch.ratio; } }
+  }
+  // SP fallback reads pitch.ratio directly in processPitchSP
 }
 function sampleRing(buf,pos,L){
   let x=pos; while(x<0)x+=L; while(x>=L)x-=L;
   const i0=Math.floor(x), frac=x-i0; let i1=i0+1; if(i1>=L)i1-=L;
   return buf[i0]*(1-frac)+buf[i1]*frac;
 }
-function processPitch(e){
+function processPitchSP(e){
   const ib=e.inputBuffer, ob=e.outputBuffer;
   const inL=ib.getChannelData(0);
   const inR=ib.numberOfChannels>1?ib.getChannelData(1):inL;
   const outL=ob.getChannelData(0), outR=ob.getChannelData(1);
   const r0=pitch.ring[0], r1=pitch.ring[1], L=pitch.ringL, g=pitch.g;
-  const R=pitch.ratio, up=R>1, depth=Math.abs(1-R)*g;
-  const N=inL.length, TP=Math.PI*2;
+  const R=pitch.ratio, up=R>1, depth=Math.abs(1-R)*g, PI=Math.PI, OUT=0.9;
+  const N=inL.length;
   let w=pitch.wIdx, n=pitch.n;
   for(let i=0;i<N;i++){
     r0[w]=inL[i]; r1[w]=inR[i];
     const p=n/g; let pB=p+0.5; if(pB>=1)pB-=1;
     const dA=up?depth*(1-p):depth*p;
     const dB=up?depth*(1-pB):depth*pB;
-    const eA=0.5-0.5*Math.cos(TP*p), eB=0.5-0.5*Math.cos(TP*pB);
-    const ra=w-dA, rb=w-dB;
-    outL[i]=sampleRing(r0,ra,L)*eA+sampleRing(r0,rb,L)*eB;
-    outR[i]=sampleRing(r1,ra,L)*eA+sampleRing(r1,rb,L)*eB;
+    const eA=Math.sin(PI*p), eB=Math.sin(PI*pB);   // equal power
+    outL[i]=(sampleRing(r0,w-dA,L)*eA+sampleRing(r0,w-dB,L)*eB)*OUT;
+    outR[i]=(sampleRing(r1,w-dA,L)*eA+sampleRing(r1,w-dB,L)*eB)*OUT;
     w++; if(w>=L)w=0;
     n++; if(n>=g)n=0;
   }
@@ -1266,11 +1368,18 @@ function setPitch(semis,persist){
   $('#pitchSlider').value=semis;
   $('#pitchVal').textContent = semis>0?('+'+semis+' st'):(semis<0?(semis+' st'):'0');
   const want=semis!==0;
-  if(want && !pitch.built) buildPitchGraph();
-  pitch.on=want && pitch.built;
-  if(want && !pitch.built){ toast('Pitch shift not supported here'); }
-  routePitch();
   if(player.ctx && player.ctx.state==='suspended') player.ctx.resume();
+  if(want && !pitch.built){
+    ensurePitchGraph().then(ok=>{
+      if(!ok){ toast('Pitch shift not supported here'); return; }
+      pitch.on = pitch.semis!==0;
+      applyRatio(); routePitch();
+      if(player.ctx.state==='suspended') player.ctx.resume();
+    });
+  } else {
+    pitch.on = want && pitch.built;
+    applyRatio(); routePitch();
+  }
   if(persist && player.snip){ player.snip.pitch=semis; clearTimeout(pitch._save); pitch._save=setTimeout(()=>DB.put('snippets',player.snip),300); }
 }
 $('#pitchSlider').addEventListener('input',e=>setPitch(+e.target.value,true));
@@ -1711,20 +1820,43 @@ function downloadBlob(blob,filename){
   setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); },1500);
 }
 
+/* ---------- progress overlay ---------- */
+const PROG_CIRC=2*Math.PI*44;
+function showProgress(title,sub,indeterminate){
+  const o=$('#progressOverlay');
+  $('.prog-title',o).textContent=title||'Working…';
+  $('.prog-sub',o).textContent=sub||'';
+  o.classList.toggle('indeterminate',!!indeterminate);
+  if(!indeterminate) setProgress(0);
+  o.classList.remove('hidden');
+}
+function setProgress(pct,sub){
+  const o=$('#progressOverlay'); o.classList.remove('indeterminate');
+  pct=clamp(pct,0,100);
+  $('.prog-fg',o).style.strokeDashoffset=PROG_CIRC*(1-pct/100);
+  $('.prog-pct',o).textContent=Math.round(pct)+'%';
+  if(sub!==undefined) $('.prog-sub',o).textContent=sub;
+}
+function progSub(text){ $('.prog-sub',$('#progressOverlay')).textContent=text||''; }
+function hideProgress(){ $('#progressOverlay').classList.add('hidden'); }
+const nextFrame=()=>new Promise(r=>requestAnimationFrame(()=>r()));
+
 async function exportBundle(snips, setlists, stem){
   if(typeof JSZip==='undefined'){ toast('Zip library not loaded'); return; }
-  toast('Building export…');
+  showProgress('Preparing export…', (snips.length+' snippet'+(snips.length!==1?'s':'')), true);
+  await nextFrame();
   try{
     const zip=new JSZip();
     const manifest={ app:'StageReady', version:1, exportedAt:Date.now(), snippets:[], setlists:[] };
     for(const s of snips){
       const audioExt=extFromType(s.audioType, (s.audioFile&&s.audioFile.name? (s.audioFile.name.match(/\.([^.]+)$/)||[])[1]:'') );
       const audioPath=`audio/${s.id}.${audioExt}`;
-      if(s.audioFile) zip.file(audioPath, s.audioFile);
+      // STORE: audio/recordings are already compressed — never re-deflate (huge speed/memory win)
+      if(s.audioFile) zip.file(audioPath, s.audioFile, {compression:'STORE'});
       const recMeta=[];
       (s.recordings||[]).forEach((r,i)=>{
         const rp=`recordings/${s.id}/${r.id||i}.webm`;
-        if(r.blob){ zip.file(rp, r.blob); recMeta.push({ id:r.id, timestamp:r.timestamp, dur:r.dur, path:rp }); }
+        if(r.blob){ zip.file(rp, r.blob, {compression:'STORE'}); recMeta.push({ id:r.id, timestamp:r.timestamp, dur:r.dur, path:rp }); }
       });
       manifest.snippets.push({
         id:s.id, name:s.name, audioType:s.audioType, audioPath:s.audioFile?audioPath:null,
@@ -1734,12 +1866,19 @@ async function exportBundle(snips, setlists, stem){
       });
     }
     setlists.forEach(sl=>manifest.setlists.push({ id:sl.id, name:sl.name, snippetIds:sl.snippetIds||[] }));
-    zip.file('manifest.json', JSON.stringify(manifest,null,2));
-    const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE',compressionOptions:{level:5}});
+    zip.file('manifest.json', JSON.stringify(manifest,null,2));   // tiny — fine to deflate by default
+    showProgress('Packaging…','Writing zip', false);
+    await nextFrame();
+    const blob=await zip.generateAsync(
+      { type:'blob', compression:'STORE', streamFiles:true },
+      (meta)=>{ setProgress(meta.percent, meta.currentFile||'Writing zip'); }
+    );
+    setProgress(100,'Saving…');
     const stamp=new Date().toISOString().slice(0,10);
     downloadBlob(blob,`${stem}-${stamp}.zip`);
+    hideProgress();
     toast('Export ready');
-  }catch(err){ console.error(err); toast('Export failed'); }
+  }catch(err){ console.error(err); hideProgress(); toast('Export failed: '+(err&&err.message?err.message:'unknown')); }
 }
 async function exportData(){
   return exportBundle(state.snippets, state.setlists, 'stage-ready');
@@ -1798,14 +1937,19 @@ window.addEventListener('afterprint',()=>{ const r=$('#printRoot'); if(r){ r.inn
 
 async function importZip(file){
   if(typeof JSZip==='undefined'){ toast('Zip library not loaded'); return; }
-  toast('Reading archive…');
+  showProgress('Reading archive…','', true);
+  await nextFrame();
   try{
     const zip=await JSZip.loadAsync(file);
     const mf=zip.file('manifest.json');
-    if(!mf){ toast('No manifest in zip'); return; }
+    if(!mf){ hideProgress(); toast('No manifest in zip'); return; }
     const manifest=JSON.parse(await mf.async('string'));
-    let added=0;
-    for(const sm of (manifest.snippets||[])){
+    const snipList=manifest.snippets||[];
+    const total=snipList.length||1;
+    let added=0, i=0;
+    showProgress('Importing…', total+' snippet'+(total!==1?'s':''));
+    for(const sm of snipList){
+      i++; setProgress((i-1)/total*100, sm.name||('Snippet '+i));
       let audioFile=null;
       if(sm.audioPath && zip.file(sm.audioPath)) audioFile=await zip.file(sm.audioPath).async('blob');
       const recordings=[];
@@ -1819,6 +1963,7 @@ async function importZip(file){
         notes:sm.notes||'', recordings, ratings:sm.ratings||[], pitch:sm.pitch||0, lastPlayed:sm.lastPlayed||null, createdAt:sm.createdAt||Date.now(),
         _origId:sm.id };
       await DB.put('snippets',snip); state.snippets.push(snip); reindex(); added++;
+      setProgress(i/total*100, sm.name||('Snippet '+i));
     }
     // merge setlists (map original ids -> imported ids)
     const idMap={}; state.snippets.forEach(s=>{ if(s._origId) idMap[s._origId]=s.id; });
@@ -1840,25 +1985,44 @@ async function importZip(file){
     await DB.put('setlists',lib);
     state.snippets.forEach(s=>delete s._origId);
     reindex(); renderDrawer(); renderLibrary();
+    hideProgress();
     toast(added?`Imported ${added} snippet${added>1?'s':''}`:'Nothing to import');
-  }catch(err){ console.error(err); toast('Import failed — invalid zip'); }
+  }catch(err){ console.error(err); hideProgress(); toast('Import failed — invalid zip'); }
 }
 
+function snipSig(name,size){ return (name||'').trim().toLowerCase()+'::'+(size||0); }
 async function importDirectory(fileList){
-  const files=[...fileList].filter(f=>AUDIO_EXT.test(f.name));
-  if(!files.length){ toast('No audio files found'); return; }
-  toast(`Adding ${files.length} file${files.length>1?'s':''}…`);
+  const all=[...fileList].filter(f=>AUDIO_EXT.test(f.name));
+  if(!all.length){ toast('No audio files found'); return; }
+  // dedup: skip files already present (match on name-without-ext + byte size)
+  const existing=new Set(state.snippets.map(s=>snipSig(
+    (s.audioFile&&s.audioFile.name? s.audioFile.name.replace(/\.[^.]+$/,'') : s.name),
+    s.audioFile&&s.audioFile.size )));
+  const seen=new Set();
+  const files=[];
+  let skipped=0;
+  for(const f of all){
+    const sig=snipSig(f.name.replace(/\.[^.]+$/,''), f.size);
+    if(existing.has(sig)||seen.has(sig)){ skipped++; continue; }
+    seen.add(sig); files.push(f);
+  }
+  if(!files.length){ toast(skipped?`All ${skipped} file${skipped>1?'s':''} already in library`:'Nothing to add'); return; }
+  showProgress('Adding folder…', files.length+' new file'+(files.length!==1?'s':''));
+  await nextFrame();
   const lib=getLibrary();
-  let added=0;
+  const total=files.length; let added=0, i=0;
   for(const f of files){
+    i++; setProgress((i-1)/total*100, f.name);
     const name=f.name.replace(/\.[^.]+$/,'');
     const snip={ id:uid(), name, audioFile:f, audioType:f.type||'audio/mpeg',
       tags:[], markers:[], notes:'', recordings:[], ratings:[], pitch:0, lastPlayed:null, createdAt:Date.now() };
     state.snippets.push(snip); lib.snippetIds.push(snip.id);
     await DB.put('snippets',snip); added++;
+    setProgress(i/total*100, f.name);
   }
   await DB.put('setlists',lib); reindex(); renderDrawer(); renderLibrary();
-  toast(`Added ${added} snippet${added>1?'s':''}`);
+  hideProgress();
+  toast(`Added ${added}${skipped?', skipped '+skipped+' duplicate'+(skipped>1?'s':''):''}`);
 }
 
 /* Import chooser modal */
