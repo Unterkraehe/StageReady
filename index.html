@@ -107,7 +107,7 @@ svg{stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round}
 .setlist-row .ct{font-size:12px;color:var(--txt-3);background:var(--bg);border:1px solid var(--line);padding:1px 7px;border-radius:20px}
 .setlist-row .mini{opacity:0;transition:.15s}
 .setlist-row:hover .mini{opacity:1}
-.drawer-foot{border-top:1px dashed var(--line-2);padding:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.drawer-foot{border-top:1px dashed var(--line-2);padding:10px;display:flex;flex-direction:column;gap:8px}
 
 /* ===================== BUTTONS ===================== */
 .btn{
@@ -344,6 +344,8 @@ textarea.notes-area:focus{border-color:var(--accent)}
 .modal-head h3{font-size:20px;letter-spacing:.06em;flex:1}
 .modal-body{padding:8px 18px 18px;overflow-y:auto}
 .modal-foot{padding:12px 18px;border-top:1px solid var(--line);display:flex;gap:10px;justify-content:flex-end}
+.set-sec-label{font-family:var(--font-display);text-transform:uppercase;font-size:11px;letter-spacing:.16em;color:var(--txt-3);margin:0 0 8px;padding-bottom:5px;border-bottom:1px dashed var(--line)}
+.set-sec-label.danger{color:var(--danger,#e8401f)}
 .field{margin-bottom:14px}
 .field label{display:block;font-family:var(--font-display);text-transform:uppercase;font-size:12px;letter-spacing:.1em;color:var(--txt-3);margin-bottom:6px}
 .field input[type=text],.field input[type=number],.field textarea,.field select{
@@ -464,9 +466,8 @@ textarea.notes-area:focus{border-color:var(--accent)}
     <div id="userSetlists"></div>
   </div>
   <div class="drawer-foot">
-    <button class="btn sm" id="importBtn"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>Import</button>
-    <button class="btn sm" id="exportBtn"><svg viewBox="0 0 24 24"><path d="M12 21V9m0 0 4 4m-4-4-4 4M5 3h14"/></svg>Export</button>
-    <button class="btn sm accent" id="installBtn" style="display:none;flex-basis:100%"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>Install app</button>
+    <button class="btn sm" id="settingsBtn"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Settings</button>
+    <button class="btn sm accent" id="installBtn" style="display:none"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>Install app</button>
   </div>
 </aside>
 
@@ -713,6 +714,7 @@ const DB={
   async get(store,key){ return idbReq((await tx(store)).get(key)); },
   async put(store,val){ return idbReq((await tx(store,'readwrite')).put(val)); },
   async del(store,key){ return idbReq((await tx(store,'readwrite')).delete(key)); },
+  async clear(store){ return idbReq((await tx(store,'readwrite')).clear()); },
   async metaGet(key,def){ const r=await this.get('meta',key); return r?r.value:def; },
   async metaSet(key,value){ return this.put('meta',{key,value}); },
 };
@@ -2026,19 +2028,77 @@ async function importDirectory(fileList){
 }
 
 /* Import chooser modal */
-$('#importBtn').onclick=()=>{
+/* Import chooser */
+function openImportChooser(){
   openModal(`<div class="modal-head"><h3>Import</h3></div>
     <div class="modal-body">
       <p class="muted" style="margin:0 0 14px">Restore a previous export, or build snippets from a folder of audio files.</p>
       <button class="btn" id="_impZip" style="width:100%;margin-bottom:10px"><svg viewBox="0 0 24 24"><path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/></svg>Import export (.zip)</button>
       <button class="btn" id="_impDir" style="width:100%"><svg viewBox="0 0 24 24"><path d="M3 7h6l2 2h10v11H3z"/></svg>Import folder of audio</button>
     </div>
-    <div class="modal-foot"><button class="btn ghost" id="_cancel">Cancel</button></div>`);
-  $('#_cancel').onclick=closeModal;
+    <div class="modal-foot"><button class="btn ghost" id="_back">Back</button></div>`);
+  $('#_back').onclick=openSettings;
   $('#_impZip').onclick=()=>{ const inp=$('#zipInput'); inp.value=''; inp.onchange=()=>{ if(inp.files[0]){ closeModal(); importZip(inp.files[0]); } }; inp.click(); };
   $('#_impDir').onclick=()=>{ const inp=$('#dirInput'); inp.value=''; inp.onchange=()=>{ if(inp.files&&inp.files.length){ closeModal(); importDirectory(inp.files); } }; inp.click(); };
-};
-$('#exportBtn').onclick=exportData;
+}
+
+/* ---------- Settings ---------- */
+function openSettings(){
+  openModal(`<div class="modal-head"><h3>Settings</h3></div>
+    <div class="modal-body">
+      <div class="set-sec-label">Data</div>
+      <button class="btn" id="_setImport" style="width:100%;justify-content:flex-start;margin-bottom:8px"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>Import…</button>
+      <button class="btn" id="_setExport" style="width:100%;justify-content:flex-start"><svg viewBox="0 0 24 24"><path d="M12 21V9m0 0 4 4m-4-4-4 4M5 3h14"/></svg>Export everything</button>
+
+      <div class="set-sec-label danger" style="margin-top:20px">Danger zone</div>
+      <button class="btn danger" id="_setReset" style="width:100%;justify-content:flex-start"><svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>Reset app…</button>
+      <p class="muted" style="font-size:12px;margin:8px 2px 0">Permanently erases every snippet, setlist, recording, rating and setting stored on this device. Export first if you want a backup.</p>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" id="_cancel">Close</button></div>`);
+  $('#_cancel').onclick=closeModal;
+  $('#_setImport').onclick=openImportChooser;
+  $('#_setExport').onclick=()=>{ closeModal(); exportData(); };
+  $('#_setReset').onclick=resetAppFlow;
+}
+$('#settingsBtn').onclick=openSettings;
+
+/* ---------- Reset app (double confirmation) ---------- */
+async function resetAppFlow(){
+  const c1=await confirmDialog('Reset app?',
+    'This permanently deletes ALL snippets, setlists, recordings, ratings and settings on this device. This cannot be undone.',
+    'Continue', true);
+  if(!c1) return;
+  const c2=await confirmDialog('Are you absolutely sure?',
+    'There is no undo. Everything will be erased and the app returns to a clean state.',
+    'Erase everything', true);
+  if(!c2) return;
+  await resetApp();
+}
+async function resetApp(){
+  try{ audioEl.pause(); }catch(e){}
+  try{ if(state.current) closeSnippet(); }catch(e){}
+  try{ closeTools(); }catch(e){}
+  try{ if(typeof stopMetro==='function') stopMetro(); }catch(e){}
+  try{ closeDrawer(); }catch(e){}
+  showProgress('Resetting…','', true);
+  try{
+    await DB.clear('snippets');
+    await DB.clear('setlists');
+    await DB.clear('meta');
+    // wipe in-memory state
+    state.snippets=[]; state.setlists=[]; state.byId={};
+    state.search=''; state.activeTags=new Set(); state.sort='custom'; state.sortDir=1;
+    state.shuffleOrder=null; state.navList=[]; state.current=null; state.currentSetlistId=LIBRARY_ID;
+    await reloadData();                 // recreates an empty Library
+    await applyTheme('dark');           // back to default theme
+    // reset filter UI
+    const si=$('#searchInput'); if(si) si.value='';
+    const ss=$('#sortSelect'); if(ss) ss.value='custom';
+    renderTagFilter(); renderDrawer(); renderLibrary();
+    hideProgress();
+    toast('App reset to a clean state');
+  }catch(err){ console.error(err); hideProgress(); toast('Reset failed'); }
+}
 
 /* ============================================================
    PWA — service worker + install
