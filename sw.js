@@ -1,5 +1,5 @@
 /* Stage Ready — service worker (offline app shell + runtime cache) */
-const VERSION = 'stage-ready-v1';
+const VERSION = 'stage-ready-v3';
 const CORE = [
   './',
   './index.html',
@@ -36,7 +36,7 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Everything else (app assets, fonts, JSZip CDN): cache-first, then network,
+  // Everything else (app assets, fonts): cache-first, then network,
   // caching successful responses for offline use.
   e.respondWith(
     caches.match(req).then((hit) => {
