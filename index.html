@@ -207,10 +207,10 @@ body.show-handles .snip-handle{display:block}
 }
 .sv-title-wrap{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:1px}
 .sv-head .nm{font-family:var(--font-display);font-weight:600;font-size:19px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.02em}
-.sv-scroll{flex:1;overflow-y:auto;padding:14px 14px calc(40px + var(--safe-b))}
+.sv-scroll{flex:1;overflow-y:auto;padding:14px 14px calc(40px + var(--safe-b));overscroll-behavior:contain}
 #snippetView.mini .sv-scroll,#snippetView.mini .full-only{display:none}
 .mini-only{display:none}
-#snippetView.mini .mini-only{display:flex}
+#snippetView.mini .mini-only{display:flex;align-items:center;justify-content:center}
 
 /* ---- mini bar (collapsed player) ---- */
 #snippetView.mini .sv-head{
@@ -267,7 +267,11 @@ body.show-handles .snip-handle{display:block}
 .time-row{display:flex;justify-content:space-between;padding:0 16px;font-family:var(--font-display);font-size:13px;color:var(--txt-3);letter-spacing:.04em}
 .transport{display:flex;align-items:center;justify-content:center;gap:6px;padding:10px 12px}
 .t-btn{width:46px;height:46px;border-radius:var(--r-sm);display:grid;place-items:center;color:var(--txt);transition:.14s}
-.t-btn:hover{background:var(--bg-3);color:var(--accent)}
+@media(hover:hover){
+  .t-btn:hover{background:var(--bg-3);color:var(--accent)}
+  .t-btn.play:hover,.t-btn.mini-play:hover{background:linear-gradient(145deg,var(--accent),var(--accent-2));color:#fff;filter:brightness(1.08)}
+}
+.t-btn.play:active,.t-btn.mini-play:active{background:linear-gradient(145deg,var(--accent),var(--accent-2));color:#fff;filter:brightness(.94)}
 .t-btn svg{width:24px;height:24px}
 .t-btn.play{width:62px;height:62px;background:var(--accent-grad);color:#fff;border-radius:50%;box-shadow:0 6px 18px rgba(232,64,31,.4)}
 .t-btn.play svg{width:30px;height:30px;fill:#fff;stroke:none}
@@ -887,7 +891,7 @@ let _pushedDepth=0, _pendingRelease=false;
 const _modalOpen=()=>modalScrim.classList.contains('show');
 const _toolOpen=()=>$('#tunerPanel').classList.contains('show')||$('#metroPanel').classList.contains('show');
 const _drawerOpen=()=>drawer.classList.contains('show');
-const _snipOpen=()=>$('#snippetView').classList.contains('show');
+const _snipOpen=()=>{ const sv=$('#snippetView'); return sv.classList.contains('show') && !sv.classList.contains('mini'); };
 const _layerDepth=()=>(_modalOpen()?1:0)+(_toolOpen()?1:0)+(_drawerOpen()?1:0)+(_snipOpen()?1:0);
 function syncBackGuard(){
   if(_pendingRelease) return;                    // a back() is in flight — resync when it lands
@@ -906,7 +910,7 @@ window.addEventListener('popstate',()=>{
   if(_modalOpen()) closeModal();
   else if(_toolOpen()) closeTools();
   else if(_drawerOpen()) closeDrawer();
-  else if(_snipOpen()) closeSnippet();
+  else if(_snipOpen()) setMini(true);
   // the close call runs syncBackGuard(); depth is already balanced → no-op
 });
 
@@ -1706,6 +1710,7 @@ function setMini(on){
   const fab=$('#fab');
   if(on){ fab.classList.remove('hidden'); fab.classList.add('lifted'); updateMiniInfo(); }
   else { fab.classList.add('hidden'); fab.classList.remove('lifted'); }
+  syncBackGuard();
 }
 $('#svCollapseBtn').onclick=()=>setMini(true);
 $('#svExpandBtn').onclick=()=>setMini(false);
@@ -2435,6 +2440,83 @@ $('#installBtn').onclick=async()=>{
   _deferredPrompt=null; $('#installBtn').style.display='none';
 };
 window.addEventListener('appinstalled',()=>{ $('#installBtn').style.display='none'; toast('App installed'); });
+
+/* ============================================================
+   SWIPE GESTURES
+   - Snippet view: pull down while scrolled to top → minimize
+   - Tool panels: swipe up → close
+   - Drawer: swipe left → close (follows the finger)
+   - Modal sheet: drag header down → close (follows the finger)
+   ============================================================ */
+function onSwipe(el,opts){
+  let sx=0,sy=0,dx=0,dy=0,active=false,engaged=false;
+  el.addEventListener('touchstart',e=>{
+    if(opts.canStart && !opts.canStart(e)){ active=false; return; }
+    const t=e.touches[0]; sx=t.clientX; sy=t.clientY; dx=dy=0; active=true; engaged=false;
+  },{passive:true});
+  el.addEventListener('touchmove',e=>{
+    if(!active) return;
+    const t=e.touches[0]; dx=t.clientX-sx; dy=t.clientY-sy;
+    if(!engaged){
+      if(Math.abs(dx)<12 && Math.abs(dy)<12) return;
+      if(!opts.engage(dx,dy,e)){ active=false; return; }   // wrong direction → hand back to browser
+      engaged=true;
+    }
+    if(opts.onMove) opts.onMove(dx,dy);
+  },{passive:true});
+  const end=()=>{
+    if(!active) return; active=false;
+    if(engaged) opts.onEnd(dx,dy);
+  };
+  el.addEventListener('touchend',end,{passive:true});
+  el.addEventListener('touchcancel',()=>{ if(active){ active=false; if(engaged&&opts.onCancel) opts.onCancel(); } },{passive:true});
+}
+
+/* 1) full snippet view: pull down at top → minimize */
+onSwipe($('#snippetView'),{
+  canStart:e=>{
+    if(snippetView.classList.contains('mini')) return false;
+    if(e.target.closest('.wave-stage,.loop-handle,input,textarea,audio,button')) return false;
+    const sc=$('.sv-scroll'); return sc.scrollTop<=0;
+  },
+  engage:(dx,dy)=>dy>0 && dy>Math.abs(dx)*1.4 && $('.sv-scroll').scrollTop<=0,
+  onEnd:(dx,dy)=>{ if(dy>90) setMini(true); }
+});
+
+/* 2) tool panels: swipe up → close (works from sliders too; a strongly
+      vertical motion is required so horizontal slider drags never trigger) */
+[['#tunerPanel'],['#metroPanel']].forEach(([sel])=>{
+  onSwipe($(sel),{
+    canStart:e=>!e.target.closest('button'),
+    engage:(dx,dy)=>dy<0 && -dy>Math.abs(dx)*2,
+    onEnd:(dx,dy)=>{ if(dy<-60) closeTools(); }
+  });
+});
+
+/* 3) drawer: swipe left → close, following the finger */
+onSwipe(drawer,{
+  canStart:e=>drawer.classList.contains('show'),
+  engage:(dx,dy)=>dx<0 && -dx>Math.abs(dy)*1.2,
+  onMove:(dx)=>{ drawer.style.transition='none'; drawer.style.transform=`translateX(${Math.min(0,dx)}px)`; },
+  onEnd:(dx)=>{
+    drawer.style.transition=''; drawer.style.transform='';
+    if(dx<-70) closeDrawer();
+  },
+  onCancel:()=>{ drawer.style.transition=''; drawer.style.transform=''; }
+});
+
+/* 4) modal sheet: drag the header/handle down → close, following the finger */
+onSwipe(modalScrim,{
+  canStart:e=>!!e.target.closest('.modal-head')||e.target===modalScrim,
+  engage:(dx,dy)=>dy>0 && dy>Math.abs(dx)*1.2,
+  onMove:(dx,dy)=>{ const m=$('.modal',modalScrim); if(m){ m.style.transition='none'; m.style.transform=`translateY(${Math.max(0,dy)}px)`; } },
+  onEnd:(dx,dy)=>{
+    const m=$('.modal',modalScrim);
+    if(m){ m.style.transition=''; m.style.transform=''; }
+    if(dy>80) closeModal();
+  },
+  onCancel:()=>{ const m=$('.modal',modalScrim); if(m){ m.style.transition=''; m.style.transform=''; } }
+});
 
 /* ============================================================
    INIT / BOOTSTRAP
