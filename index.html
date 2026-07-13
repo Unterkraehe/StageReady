@@ -456,8 +456,11 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:none}
 #toolbar::after{content:"";position:absolute;left:0;right:0;bottom:-2px;height:2px;
   background:linear-gradient(90deg,var(--accent),var(--accent-2) 45%,transparent 90%)}
 #toolbar{border-bottom:1px solid var(--line)}
-#toolbar .title{font-size:21px;min-width:0}
+#toolbar .title{font-size:19px;min-width:0;letter-spacing:.09em}
 #toolbar .title #toolbarTitle{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#toolbar .icon-btn{width:40px;height:40px}
+@media(max-width:370px){#toolbar .title{font-size:17.5px;letter-spacing:.06em}}
+@media(max-width:350px){#toolbar .title{font-size:16px;letter-spacing:.03em}#toolbar .title .bolt{display:none}}
 
 /* drawer brand */
 .drawer-head{background:linear-gradient(160deg,var(--bg-3),var(--bg-2));border-bottom:1px dashed var(--line-2)}
@@ -874,49 +877,37 @@ $('#hamburgerBtn').addEventListener('click',openDrawer);
 scrim.addEventListener('click',closeDrawer);
 
 /* ---------- Android back button: close top UI layer instead of exiting ----------
-   One sentinel history entry is kept while any layer (modal / tool panel /
-   drawer / snippet view) is open. Back consumes it → we close the topmost
-   layer and re-arm if layers remain. Programmatic closes consume the
-   sentinel silently. history.back() lands ASYNCHRONOUSLY, so we must never
-   pushState while a release is in flight — if a layer opens during that
-   window, re-arming is deferred to the popstate that completes the release. */
-let _backArmed=false, _pendingRelease=false, _inPop=false;
+   One history entry is kept PER open layer (modal / tool panel / drawer /
+   snippet view). Each Back press consumes one entry and closes the topmost
+   layer — so even several rapid presses stay inside the app until every
+   layer is closed. syncBackGuard() is idempotent: it pushes or (one at a
+   time, since traversals land asynchronously) pops entries until the
+   history depth matches the number of open layers. */
+let _pushedDepth=0, _pendingRelease=false;
 const _modalOpen=()=>modalScrim.classList.contains('show');
 const _toolOpen=()=>$('#tunerPanel').classList.contains('show')||$('#metroPanel').classList.contains('show');
 const _drawerOpen=()=>drawer.classList.contains('show');
 const _snipOpen=()=>$('#snippetView').classList.contains('show');
-const _anyLayer=()=>_modalOpen()||_toolOpen()||_drawerOpen()||_snipOpen();
-function ensureBackGuard(){
-  if(_backArmed) return;
-  _backArmed=true;
-  if(_pendingRelease) return;                    // re-arm deferred to popstate
-  try{ history.pushState({sr:1},''); }catch(e){}
-}
-function releaseBackGuard(){
-  if(_inPop) return;
-  if(_backArmed && !_anyLayer()){
-    _backArmed=false;
-    if(_pendingRelease) return;                  // a back is already in flight
-    _pendingRelease=true;
+const _layerDepth=()=>(_modalOpen()?1:0)+(_toolOpen()?1:0)+(_drawerOpen()?1:0)+(_snipOpen()?1:0);
+function syncBackGuard(){
+  if(_pendingRelease) return;                    // a back() is in flight — resync when it lands
+  const want=_layerDepth();
+  while(_pushedDepth<want){ _pushedDepth++; try{ history.pushState({sr:1},''); }catch(e){} }
+  if(_pushedDepth>want){
+    _pushedDepth--; _pendingRelease=true;
     try{ history.back(); }catch(e){ _pendingRelease=false; }
   }
 }
+const ensureBackGuard=syncBackGuard, releaseBackGuard=syncBackGuard;
 window.addEventListener('popstate',()=>{
-  if(_pendingRelease){                           // our own silent release landed
-    _pendingRelease=false;
-    if(_backArmed){ try{ history.pushState({sr:1},''); }catch(e){} }  // deferred re-arm
-    return;
-  }
-  if(!_backArmed) return;                        // at root: let the browser handle it
-  _inPop=true;
-  try{
-    if(_modalOpen()) closeModal();
-    else if(_toolOpen()) closeTools();
-    else if(_drawerOpen()) closeDrawer();
-    else if(_snipOpen()) closeSnippet();
-  }finally{ _inPop=false; }
-  if(_anyLayer()){ try{ history.pushState({sr:1},''); }catch(e){} }
-  else _backArmed=false;
+  if(_pendingRelease){ _pendingRelease=false; syncBackGuard(); return; }  // our own silent release landed
+  if(_pushedDepth<=0) return;                    // at root: let the browser handle it
+  _pushedDepth--;
+  if(_modalOpen()) closeModal();
+  else if(_toolOpen()) closeTools();
+  else if(_drawerOpen()) closeDrawer();
+  else if(_snipOpen()) closeSnippet();
+  // the close call runs syncBackGuard(); depth is already balanced → no-op
 });
 
 /* ============================================================
