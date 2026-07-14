@@ -91,6 +91,7 @@ function getPrintCfg(sl){
   const cfg = sl.print = sl.print || {};
   if(cfg.heading===undefined) cfg.heading=true;
   if(cfg.notes===undefined) cfg.notes=true;
+  if(cfg.numbers===undefined) cfg.numbers=true;
   if(!cfg.mode) cfg.mode='auto';
   cfg.tags=cfg.tags||{}; cfg.gaps=cfg.gaps||[]; cfg.breaks=cfg.breaks||[];
   // ensure every tag used in this setlist has an entry
@@ -143,6 +144,9 @@ function printSetlist(sl){
       <label class="check-row ${cfg.notes?'on':''}" id="_pNotes" style="cursor:pointer">
         <span class="check-box"><svg viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></svg></span>
         <span style="flex:1;font-family:var(--font-display);font-size:15px">Include snippet notes</span></label>
+      <label class="check-row ${cfg.numbers?'on':''}" id="_pNums" style="cursor:pointer">
+        <span class="check-box"><svg viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></svg></span>
+        <span style="flex:1;font-family:var(--font-display);font-size:15px">Number songs</span></label>
 
       <div class="set-sec-label" style="margin-top:14px">Size</div>
       <div class="prt-modes" id="_pModes">
@@ -167,6 +171,7 @@ function printSetlist(sl){
   $('#_cancel').onclick=closeModal;
   $('#_pHead').onclick=()=>{ cfg.heading=!cfg.heading; $('#_pHead').classList.toggle('on',cfg.heading); savePrintCfg(sl); };
   $('#_pNotes').onclick=()=>{ cfg.notes=!cfg.notes; $('#_pNotes').classList.toggle('on',cfg.notes); savePrintCfg(sl); };
+  $('#_pNums').onclick=()=>{ cfg.numbers=!cfg.numbers; $('#_pNums').classList.toggle('on',cfg.numbers); savePrintCfg(sl); };
   $('#_pModes').onclick=e=>{ const b=e.target.closest('[data-mode]'); if(!b) return;
     cfg.mode=b.dataset.mode; $$('#_pModes .btn').forEach(x=>{ x.classList.toggle('accent',x===b); x.classList.toggle('ghost',x!==b); }); hint(); savePrintCfg(sl); };
   $('#_pTags').addEventListener('click',e=>{
@@ -221,7 +226,8 @@ function buildPrintHTML(sl,cfg){
       .map(t=>`<span class="tag" style="--tc:${safeColor(cfg.tags[t].color)}">${escapeHtml(t)}</span>`).join('');
     const meta=s.pitch? `<span class="pit">${s.pitch>0?'+':''}${s.pitch} st</span>`:'';
     const note=cfg.notes&&s.notes? `<span class="note">${escapeHtml(s.notes)}</span>`:'';
-    return `<div class="song"><span class="num">${i+1}.</span><span class="body"><span class="nm">${escapeHtml(s.name)}${meta}${tags}</span>${note}</span></div>`;
+    const num=cfg.numbers? `<span class="num">${i+1}.</span>`:'';
+    return `<div class="song">${num}<span class="body"><span class="nm">${escapeHtml(s.name)}${meta}${tags}</span>${note}</span></div>`;
   };
   // split into pages on breaks
   const breaks=[...cfg.breaks].sort((a,b)=>a-b);
@@ -249,7 +255,7 @@ ${auto?'.page{height:269mm;overflow:hidden}.page .inner{display:flex;flex-direct
 .pr-head{border-bottom:calc(4px*var(--s)) solid #000;padding-bottom:calc(8px*var(--s));margin-bottom:calc(12px*var(--s))}
 .pr-title{font-weight:700;text-transform:uppercase;letter-spacing:.04em;line-height:1.02;margin:0;font-size:calc(30pt*var(--s))}
 .pr-sub{font-weight:500;text-transform:uppercase;letter-spacing:.12em;color:#333;margin:calc(4px*var(--s)) 0 0;font-size:calc(10pt*var(--s))}
-.song{display:flex;gap:.5em;align-items:baseline;padding:calc(.30em*var(--s)) 0;border-bottom:calc(2px*var(--s)) solid #000;break-inside:avoid;page-break-inside:avoid}
+.song{display:flex;gap:.5em;align-items:baseline;padding:calc(.34em*var(--s)) 0;break-inside:avoid;page-break-inside:avoid}
 .song .num{font-weight:700;min-width:1.6em;text-align:right;font-size:calc(20pt*var(--s))}
 .song .body{flex:1;min-width:0}
 .song .nm{font-weight:700;line-height:1.05;display:block;font-size:calc(20pt*var(--s))}

@@ -500,6 +500,8 @@ html[data-theme="light"]{--line:#d3c9b8;--line-2:#b9ac97}
 .prt-tag .nm{flex:1;font-family:var(--font-display);font-size:14.5px}
 .prt-tag input[type=color],.prt-gap input[type=color]{width:34px;height:28px;border:1px solid var(--line-2);border-radius:6px;background:none;padding:1px;flex:none}
 .prt-tag .check-box.off{background:transparent;border-color:var(--line-2)}
+.prt-tag .check-box:not(.off){background:var(--accent);border-color:var(--accent)}
+.prt-tag .check-box svg{display:block}
 .prt-song{font-family:var(--font-display);font-size:15px;padding:7px 4px;border-bottom:1px solid var(--line)}
 .prt-song .num{color:var(--txt-3);margin-right:4px}
 .prt-slot{padding:2px 0}
