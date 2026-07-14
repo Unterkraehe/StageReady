@@ -1,8 +1,18 @@
 /* Stage Ready — service worker (offline app shell + runtime cache) */
-const VERSION = 'stage-ready-v5';
+const VERSION = 'stage-ready-v7';
 const CORE = [
   './',
   './index.html',
+  './css/app.css',
+  './vendor/jszip.min.js',
+  './js/01-core.js',
+  './js/02-library.js',
+  './js/03-setlists.js',
+  './js/04-player.js',
+  './js/05-details.js',
+  './js/06-tools.js',
+  './js/07-data.js',
+  './js/08-app.js',
   './manifest.webmanifest',
   './icon-192.png',
   './icon-512.png',
