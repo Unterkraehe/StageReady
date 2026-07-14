@@ -1,5 +1,5 @@
 /* Stage Ready — service worker (offline app shell + runtime cache) */
-const VERSION = 'stage-ready-v8';
+const VERSION = 'stage-ready-v9';
 const CORE = [
   './',
   './index.html',
@@ -22,7 +22,12 @@ const CORE = [
 
 self.addEventListener('install', (e) => {
   e.waitUntil(
-    caches.open(VERSION).then((c) => c.addAll(CORE)).then(() => self.skipWaiting())
+    // cache:'reload' bypasses the browser HTTP cache — otherwise a version
+    // bump can precache STALE assets the page just loaded, freezing the old
+    // app into the new cache forever.
+    caches.open(VERSION)
+      .then((c) => c.addAll(CORE.map((u) => new Request(u, { cache: 'reload' }))))
+      .then(() => self.skipWaiting())
   );
 });
 
