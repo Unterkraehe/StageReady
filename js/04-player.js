@@ -25,7 +25,7 @@ async function openSnippet(id, keepMini){
   audioEl.src=player.url; audioEl.playbackRate=parseFloat($('#speedSlider').value);
   audioEl.preservesPitch=true; audioEl.mozPreservesPitch=true; audioEl.webkitPreservesPitch=true;
   // reset loop
-  player.loopIn=null; player.loopOut=null; player.loopOn=false; setLoopRamp(0); updateLoopUI();
+  player.loopIn=null; player.loopOut=null; player.loopOn=false; player._lastT=null; setLoopRamp(0); updateLoopUI();
   player.peaks=null;
   snippetView.classList.add('show');
   ensureBackGuard();
@@ -106,7 +106,14 @@ $('#playIcon').setAttribute('fill','currentColor');
 async function togglePlay(){
   if(!player.snip) return;
   if(player.ctx && player.ctx.state==='suspended') player.ctx.resume();
-  if(audioEl.paused){ try{ await audioEl.play(); }catch(e){ toast('Tap again to play'); } }
+  if(audioEl.paused){
+    // armed loop + starting outside the region → snap into the loop
+    if(player.loopOn && player.loopIn!=null && player.loopOut!=null){
+      const t=audioEl.currentTime;
+      if(t<player.loopIn-0.01 || t>=player.loopOut-0.01){ audioEl.currentTime=player.loopIn; player._lastT=player.loopIn; }
+    }
+    try{ await audioEl.play(); }catch(e){ toast('Tap again to play'); }
+  }
   else audioEl.pause();
 }
 audioEl.addEventListener('play',()=>{ setPlayIcon(true); markPlayed(); loop(); msPlayback('playing'); });
@@ -115,7 +122,7 @@ audioEl.addEventListener('ended',()=>{ setPlayIcon(false); msPlayback('paused');
 audioEl.addEventListener('loadedmetadata',()=>{ player.duration=audioEl.duration; $('#durTime').textContent=fmtTime(player.duration); $('#curTime').textContent='0:00'; updatePlayhead(); renderMarkers(); updateLoopUI(); msPosition(); });
 audioEl.addEventListener('timeupdate',()=>{ checkLoopWrap(); if(!player.raf){ $('#curTime').textContent=fmtTime(audioEl.currentTime); updatePlayhead(); updateMiniInfo(); } });
 audioEl.addEventListener('ratechange',msPosition);
-audioEl.addEventListener('seeked',msPosition);
+audioEl.addEventListener('seeked',()=>{ player._lastT=audioEl.currentTime; msPosition(); });
 
 /* ---------- Media Session: playback notification + hardware buttons ----------
    Lets Android's media notification / lockscreen / BT headset buttons control
@@ -154,8 +161,15 @@ if('mediaSession' in navigator){
 }
 
 function checkLoopWrap(){
-  if(player.loopOn && player.loopOut!=null && audioEl.currentTime>=player.loopOut){
+  const t=audioEl.currentTime;
+  const prev=(player._lastT==null)? t : player._lastT;
+  player._lastT=t;
+  if(!player.loopOn || player.loopOut==null || audioEl.paused || audioEl.seeking) return;
+  // wrap only when playback NATURALLY crosses the out point from inside the
+  // region — a seek that lands beyond it must never yank the cursor back
+  if(prev<player.loopOut && t>=player.loopOut && (t-prev)<=1.2){
     audioEl.currentTime=player.loopIn||0;
+    player._lastT=audioEl.currentTime;
     if(player.loopRamp>0){
       const v=clamp(Math.round((audioEl.playbackRate+player.loopRamp)*100)/100,0.3,2.0);
       $('#speedSlider').value=v; audioEl.playbackRate=v; $('#speedVal').textContent=v.toFixed(2)+'x';
@@ -491,22 +505,45 @@ waveStage.addEventListener('pointercancel',()=>{ scrubbing=false; });
 /* ---------- loop ---------- */
 function updateLoopUI(){
   const d=player.duration||1;
-  if(player.loopIn!=null && player.loopOut!=null && player.loopOut>player.loopIn){
+  const hasRegion=player.loopIn!=null && player.loopOut!=null && player.loopOut>player.loopIn;
+  if(hasRegion){
     loopRegion.classList.add('on');
     const a=player.loopIn/d*100, b=player.loopOut/d*100;
     loopRegion.style.left=a+'%'; loopRegion.style.width=(b-a)+'%';
     loopHIn.style.left='calc('+a+'% - 8px)'; loopHOut.style.left='calc('+b+'% - 8px)';
     loopHIn.style.display=loopHOut.style.display='block';
+  } else if(player.loopIn!=null || player.loopOut!=null){
+    // single point set: show just that handle as a preview
+    loopRegion.classList.remove('on');
+    const p=(player.loopIn!=null?player.loopIn:player.loopOut)/d*100;
+    if(player.loopIn!=null){ loopHIn.style.left='calc('+p+'% - 8px)'; loopHIn.style.display='block'; loopHOut.style.display='none'; }
+    else { loopHOut.style.left='calc('+p+'% - 8px)'; loopHOut.style.display='block'; loopHIn.style.display='none'; }
   } else {
     loopRegion.classList.remove('on'); loopHIn.style.display=loopHOut.style.display='none';
   }
-  $('#loopToggleBtn').textContent='Loop: '+(player.loopOn?'On':'Off');
-  $('#loopToggleBtn').classList.toggle('accent',player.loopOn);
+  const tb=$('#loopToggleBtn');
+  tb.textContent='Loop: '+(player.loopOn?'On':'Off');
+  tb.classList.toggle('accent',player.loopOn);
+  tb.classList.toggle('ghost',!player.loopOn);
+  $('#loopRampRow').style.display=hasRegion?'flex':'none';
 }
-$('#setInBtn').onclick=()=>{ player.loopIn=audioEl.currentTime; if(player.loopOut==null||player.loopOut<=player.loopIn) player.loopOut=Math.min(player.duration,player.loopIn+5); player.loopOn=true; updateLoopUI(); };
-$('#setOutBtn').onclick=()=>{ player.loopOut=audioEl.currentTime; if(player.loopIn==null||player.loopIn>=player.loopOut) player.loopIn=Math.max(0,player.loopOut-5); player.loopOn=true; updateLoopUI(); };
-$('#loopToggleBtn').onclick=()=>{ if(player.loopIn==null){ toast('Set loop in/out first'); return; } player.loopOn=!player.loopOn; updateLoopUI(); };
-$('#clearLoopBtn').onclick=()=>{ player.loopIn=player.loopOut=null; player.loopOn=false; updateLoopUI(); };
+function setLoopPoint(which){
+  const t=audioEl.currentTime;
+  if(which==='in') player.loopIn=t; else player.loopOut=t;
+  // both set but reversed → swap so In is always the earlier point
+  if(player.loopIn!=null && player.loopOut!=null && player.loopOut<=player.loopIn){
+    const a=Math.min(player.loopIn,player.loopOut), b=Math.max(player.loopIn,player.loopOut);
+    if(b-a<0.05){ toast('In and out are the same spot'); if(which==='in') player.loopIn=null; else player.loopOut=null; }
+    else { player.loopIn=a; player.loopOut=b; }
+  }
+  // arm automatically once a valid region exists
+  player.loopOn = player.loopIn!=null && player.loopOut!=null && player.loopOut>player.loopIn;
+  updateLoopUI();
+}
+$('#setInBtn').onclick=()=>setLoopPoint('in');
+$('#setOutBtn').onclick=()=>setLoopPoint('out');
+$('#loopToggleBtn').onclick=()=>{ if(player.loopIn==null||player.loopOut==null){ toast('Set loop in & out first'); return; } player.loopOn=!player.loopOn; updateLoopUI(); };
+$('#clearLoopBtn').onclick=()=>{ player.loopIn=player.loopOut=null; player.loopOn=false; setLoopRamp(0); updateLoopUI(); };
 function dragLoopHandle(handle,which){
   handle.addEventListener('pointerdown',e=>{
     e.stopPropagation(); handle.setPointerCapture(e.pointerId);
