@@ -163,7 +163,6 @@
         <button class="btn sm ghost" id="setOutBtn">Set Out</button>
         <button class="btn sm ghost" id="loopToggleBtn">Loop: Off</button>
         <button class="btn sm ghost" id="clearLoopBtn">Clear</button>
-        <button class="btn sm accent" id="addMarkerBtn" style="margin-left:auto"><svg viewBox="0 0 24 24"><path d="M12 2 4 6v6c0 5 8 10 8 10s8-5 8-10V6z"/></svg>Marker</button>
       </div>
       <div class="loop-bar loop-sub" id="loopRampRow" style="display:none">
         <span class="lbl">Ramp</span>
@@ -171,6 +170,10 @@
         <span class="speed-val" id="loopRampVal" style="min-width:78px;text-align:center">off</span>
         <button class="step-btn" id="loopRampUp" aria-label="Ramp more">+</button>
         <span class="muted" style="font-size:12px;margin-left:6px">speed / loop cycle</span>
+      </div>
+      <div class="loop-bar" style="margin-top:2px">
+        <span class="lbl">Marks</span>
+        <button class="btn sm accent" id="addMarkerBtn"><svg viewBox="0 0 24 24"><path d="M12 2 4 6v6c0 5 8 10 8 10s8-5 8-10V6z"/></svg>Marker</button>
       </div>
       <div class="marker-list" id="markerList"></div>
     </div>

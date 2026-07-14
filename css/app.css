@@ -219,10 +219,11 @@ body.show-handles .snip-handle{display:block}
 }
 .wave-stage{position:relative;height:128px;touch-action:none;cursor:crosshair}
 #waveCanvas{position:absolute;inset:0;width:100%;height:100%;display:block}
-.loop-region{position:absolute;top:0;bottom:0;background:rgba(255,122,47,.16);border-left:2px solid var(--accent-2);border-right:2px solid var(--accent-2);display:none;pointer-events:none}
+.loop-region{position:absolute;top:0;bottom:0;background:rgba(255,122,47,.16);display:none;pointer-events:none}
 .loop-region.on{display:block}
 .loop-handle{position:absolute;top:0;bottom:0;width:16px;z-index:4;touch-action:none;pointer-events:auto;display:none}
-.loop-region.on ~ .loop-handle{display:block}
+.loop-handle::before{content:"";position:absolute;left:7px;top:0;bottom:0;width:2px;background:var(--accent-2)}
+.loop-handle::after{content:"";position:absolute;left:1px;top:50%;width:14px;height:14px;margin-top:-7px;border-radius:50%;background:var(--accent-2);border:2px solid var(--bg-1);box-sizing:border-box}
 .loop-handle.in{cursor:ew-resize}.loop-handle.out{cursor:ew-resize}
 .playhead{position:absolute;top:0;bottom:0;width:2px;background:var(--accent);box-shadow:0 0 8px var(--accent);left:0;pointer-events:none;z-index:3}
 .marker-pin{position:absolute;top:0;width:0;z-index:3;cursor:pointer}
@@ -514,3 +515,7 @@ html[data-theme="light"]{--line:#d3c9b8;--line-2:#b9ac97}
 /* loop sub-row (ramp): visually tied to the loop group */
 .loop-sub{padding-top:0;margin-left:10px;padding-left:14px;border-left:3px solid var(--accent);align-items:center}
 .loop-sub .lbl{color:var(--accent-2)}
+
+/* Set In / Set Out buttons: filled state when their point exists */
+.btn.set{border-color:var(--accent-2);color:var(--accent-2);font-variant-numeric:tabular-nums}
+.btn.set::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent-2);margin-right:6px;vertical-align:1px}

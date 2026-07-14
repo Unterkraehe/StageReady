@@ -507,7 +507,9 @@ function updateLoopUI(){
   const d=player.duration||1;
   const hasRegion=player.loopIn!=null && player.loopOut!=null && player.loopOut>player.loopIn;
   if(hasRegion){
-    loopRegion.classList.add('on');
+    // highlight the region only while looping is enabled;
+    // when disabled just the two handles mark the points
+    loopRegion.classList.toggle('on',player.loopOn);
     const a=player.loopIn/d*100, b=player.loopOut/d*100;
     loopRegion.style.left=a+'%'; loopRegion.style.width=(b-a)+'%';
     loopHIn.style.left='calc('+a+'% - 8px)'; loopHOut.style.left='calc('+b+'% - 8px)';
@@ -525,6 +527,12 @@ function updateLoopUI(){
   tb.textContent='Loop: '+(player.loopOn?'On':'Off');
   tb.classList.toggle('accent',player.loopOn);
   tb.classList.toggle('ghost',!player.loopOn);
+  // Set In / Set Out buttons reflect whether their point exists
+  const bi=$('#setInBtn'), bo=$('#setOutBtn');
+  bi.textContent = player.loopIn!=null? 'In '+fmtTime(player.loopIn) : 'Set In';
+  bi.classList.toggle('set',player.loopIn!=null);
+  bo.textContent = player.loopOut!=null? 'Out '+fmtTime(player.loopOut) : 'Set Out';
+  bo.classList.toggle('set',player.loopOut!=null);
   $('#loopRampRow').style.display=hasRegion?'flex':'none';
 }
 function setLoopPoint(which){

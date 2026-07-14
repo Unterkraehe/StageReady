@@ -75,6 +75,7 @@ with sync_playwright() as p:
     # ============ 4) LOOP RAMP ============
     page.evaluate("audioEl.currentTime=0.2"); page.click('#setInBtn')
     page.evaluate("audioEl.currentTime=1.0"); page.click('#setOutBtn'); page.wait_for_timeout(150)
+    page.evaluate("audioEl.currentTime=0.3")               # start inside the region
     page.click('#loopRampUp'); page.click('#loopRampUp')   # +0.02x/loop
     check('ramp label', page.eval_on_selector('#loopRampVal','e=>e.textContent')=='+0.02x')
     page.click('#playBtn'); page.wait_for_timeout(2600)     # ~3 wraps at 0.8s loop
