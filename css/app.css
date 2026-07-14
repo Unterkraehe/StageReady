@@ -95,7 +95,7 @@ svg{stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round}
   font-size:13px;padding:10px 14px;border-radius:var(--r-sm);background:var(--bg-3);
   border:1px solid var(--line-2);color:var(--txt);display:inline-flex;align-items:center;justify-content:center;gap:7px;transition:.16s
 }
-.btn:hover{border-color:var(--accent);color:var(--txt)}
+@media(hover:hover){.btn:hover{border-color:var(--accent);color:var(--txt)}}
 .btn svg{width:17px;height:17px}
 .btn.accent{background:var(--accent-grad);border-color:transparent;color:#fff;box-shadow:0 4px 14px rgba(232,64,31,.32)}
 .btn.accent:hover{filter:brightness(1.08)}
@@ -510,3 +510,7 @@ html[data-theme="light"]{--line:#d3c9b8;--line-2:#b9ac97}
 .prt-slot-btn.on{color:var(--accent);border-color:var(--accent);border-style:solid}
 .prt-gap{display:flex;align-items:center;gap:8px;padding:5px 4px;background:var(--bg-3);border-radius:8px;margin:4px 0}
 .prt-gap input[type=text]{flex:1;background:var(--bg-2);border:1px solid var(--line-2);border-radius:6px;color:var(--txt);padding:6px 9px;font-size:14px;min-width:0}
+
+/* loop sub-row (ramp): visually tied to the loop group */
+.loop-sub{padding-top:0;margin-left:10px;padding-left:14px;border-left:3px solid var(--accent);align-items:center}
+.loop-sub .lbl{color:var(--accent-2)}
