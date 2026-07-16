@@ -677,7 +677,7 @@ $('#svMenuBtn').onclick=()=>{
     <button class="btn danger" id="_del" style="justify-content:flex-start"><svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>Delete snippet</button>
   </div>`);
   $('#_edit').onclick=()=>{ closeModal(); snippetEditorModal(s); };
-  $('#_replace').onclick=()=>{ const inp=$('#audioFileInput'); inp.value=''; inp.onchange=async()=>{ if(inp.files[0]){ s.audioFile=inp.files[0]; s.audioType=inp.files[0].type; await DB.put('snippets',s); closeModal(); openSnippet(s.id); toast('Audio replaced'); } }; inp.click(); };
+  $('#_replace').onclick=()=>{ const inp=$('#audioFileInput'); inp.value=''; inp.onchange=async()=>{ if(inp.files[0]){ s.audioFile=inp.files[0]; s.audioType=inp.files[0].type; s.audioRev=(s.audioRev||0)+1; delete s.loudness; await DB.put('snippets',s); closeModal(); openSnippet(s.id); toast('Audio replaced'); } }; inp.click(); };
   $('#_close').onclick=()=>{ closeModal(); closeSnippet(); };
   $('#_del').onclick=async()=>{ if(await confirmDialog('Delete snippet?','This permanently deletes "'+s.name+'" and its audio, recordings and notes.')){ closeModal(); await deleteSnippet(s.id); closeSnippet(); } };
 };
