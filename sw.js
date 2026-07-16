@@ -1,5 +1,5 @@
 /* Stage Ready — service worker (offline app shell + runtime cache) */
-const VERSION = 'stage-ready-v11';
+const VERSION = 'stage-ready-v12';
 const CORE = [
   './',
   './index.html',
@@ -13,6 +13,7 @@ const CORE = [
   './js/06-tools.js',
   './js/07-data.js',
   './js/08-app.js',
+  './js/09-sync.js',
   './manifest.webmanifest',
   './icon-192.png',
   './icon-512.png',

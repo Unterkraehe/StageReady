@@ -98,7 +98,7 @@ function editSetlistModal(sl){
   $('#_save').onclick=async()=>{ sl.name=$('#slName').value.trim()||sl.name; await DB.put('setlists',sl); closeModal(); renderDrawer(); renderLibrary(); toast('Setlist saved'); };
   $('#_del').onclick=async()=>{
     if(await confirmDialog('Delete setlist?','This removes the setlist. Your snippets stay in the Library.')){
-      await DB.del('setlists',sl.id); state.setlists=state.setlists.filter(s=>s.id!==sl.id);
+      await DB.del('setlists',sl.id); await addTombstone('setlists',sl.id); state.setlists=state.setlists.filter(s=>s.id!==sl.id);
       if(state.currentSetlistId===sl.id) state.currentSetlistId=LIBRARY_ID;
       closeModal(); renderDrawer(); renderLibrary();
     }
@@ -163,6 +163,7 @@ async function addSnippet(snip){
 }
 async function deleteSnippet(id){
   await DB.del('snippets',id);
+  await addTombstone('snippets',id);
   state.snippets=state.snippets.filter(s=>s.id!==id); reindex();
   state.setlists.forEach(sl=>{ const n=sl.snippetIds.length; sl.snippetIds=sl.snippetIds.filter(x=>x!==id); if(sl.snippetIds.length!==n) DB.put('setlists',sl); });
   renderDrawer(); renderLibrary();

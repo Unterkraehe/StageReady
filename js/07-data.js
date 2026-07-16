@@ -420,6 +420,8 @@ function openSettings(){
         <span class="muted" style="font-size:12px">Evens out perceived volume automatically. Per-snippet Vol trim still applies.</span></span>
       </label>
 
+      <div id="_syncSec"></div>
+
       <div class="set-sec-label" style="margin-top:20px">Data</div>
       <button class="btn" id="_setImport" style="width:100%;justify-content:flex-start;margin-bottom:8px"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>Import…</button>
       <button class="btn" id="_setExport" style="width:100%;justify-content:flex-start"><svg viewBox="0 0 24 24"><path d="M12 21V9m0 0 4 4m-4-4-4 4M5 3h14"/></svg>Export everything</button>
@@ -430,6 +432,7 @@ function openSettings(){
     </div>
     <div class="modal-foot"><button class="btn ghost" id="_cancel">Close</button></div>`);
   $('#_cancel').onclick=closeModal;
+  if(typeof renderSyncSection==='function') renderSyncSection($('#_syncSec'));
   $('#_autoLoudRow').onclick=()=>{
     state.autoLoud=!(state.autoLoud!==false);
     $('#_autoLoudRow').classList.toggle('on',state.autoLoud);
@@ -465,6 +468,7 @@ async function resetApp(){
     await DB.clear('snippets');
     await DB.clear('setlists');
     await DB.clear('meta');
+    await DB.clear('tombstones');
     // wipe in-memory state
     state.snippets=[]; state.setlists=[]; state.byId={};
     state.search=''; state.activeTags=new Set(); state.sort='custom'; state.sortDir=1;

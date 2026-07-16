@@ -11,7 +11,7 @@ const fmtDate=(t)=>{ const d=new Date(t); return d.toLocaleDateString(undefined,
 const escapeHtml=(s='')=>s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 /* ---------- IndexedDB ---------- */
-const DB_NAME='stageReadyDB', DB_VER=1;
+const DB_NAME='stageReadyDB', DB_VER=2;
 let _db=null;
 function openDB(){
   return new Promise((res,rej)=>{
@@ -22,6 +22,7 @@ function openDB(){
       if(!db.objectStoreNames.contains('snippets')) db.createObjectStore('snippets',{keyPath:'id'});
       if(!db.objectStoreNames.contains('setlists')) db.createObjectStore('setlists',{keyPath:'id'});
       if(!db.objectStoreNames.contains('meta')) db.createObjectStore('meta',{keyPath:'key'});
+      if(!db.objectStoreNames.contains('tombstones')) db.createObjectStore('tombstones',{keyPath:'id'});
     };
     r.onsuccess=()=>{ _db=r.result; res(_db); };
     r.onerror=()=>rej(r.error);
@@ -32,12 +33,26 @@ function idbReq(req){ return new Promise((res,rej)=>{ req.onsuccess=()=>res(req.
 const DB={
   async getAll(store){ return idbReq((await tx(store)).getAll()); },
   async get(store,key){ return idbReq((await tx(store)).get(key)); },
-  async put(store,val){ return idbReq((await tx(store,'readwrite')).put(val)); },
+  // user-facing writes stamp updatedAt so the sync engine can merge newest-wins;
+  // the sync engine itself uses putRaw to preserve remote timestamps
+  async put(store,val){
+    if((store==='snippets'||store==='setlists') && val && typeof val==='object') val.updatedAt=Date.now();
+    const r=await idbReq((await tx(store,'readwrite')).put(val));
+    if(typeof syncQueue==='function') syncQueue(store);
+    return r;
+  },
+  async putRaw(store,val){ return idbReq((await tx(store,'readwrite')).put(val)); },
   async del(store,key){ return idbReq((await tx(store,'readwrite')).delete(key)); },
   async clear(store){ return idbReq((await tx(store,'readwrite')).clear()); },
   async metaGet(key,def){ const r=await this.get('meta',key); return r?r.value:def; },
   async metaSet(key,value){ return this.put('meta',{key,value}); },
 };
+/* deletion tombstone: without it, a deleted record would be resurrected by
+   the copy still living on another device */
+async function addTombstone(store,id){
+  await DB.putRaw('tombstones',{id, store, deletedAt:Date.now()});
+  if(typeof syncQueue==='function') syncQueue('tombstones');
+}
 
 /* ---------- App state ---------- */
 const state={
