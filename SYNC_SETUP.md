@@ -63,6 +63,35 @@ for development). For `file://` it won't work — serve over http.
   runs on launch, after edits (debounced), when you return to the tab, and on demand
   via **Sync now**.
 
+## Background sync (installed PWA)
+
+- **Android / Chrome:** yes. The sync engine also runs inside the service worker,
+  so the browser can finish an interrupted sync (and pick up changes) while the app
+  is closed, using the Background Sync API. If you also grant the periodic
+  background sync permission, Chrome will additionally refresh roughly twice a day
+  at its own discretion. Background sync events get a limited time budget, so the
+  *first* upload of a large library is still best done with the app open.
+- **iPhone / iPad:** not possible. Safari implements neither Background Sync nor
+  Periodic Background Sync, in a home-screen PWA or otherwise. There, syncing runs
+  whenever the app is open (on launch, after edits, and when you switch back to it).
+
+## Reliability with big libraries
+
+Uploading a few hundred snippets is a long job, so sync is built to resume rather
+than restart:
+
+- The Drive folder id is remembered, so a second `StageReady` folder (created by, say,
+  two devices' first sync racing each other) can never make the app think its files
+  are missing and upload them all again.
+- Files already on Drive are never uploaded twice — verified in a 300-snippet test
+  across app restarts.
+- The manifest is checkpointed every 25 files, so an interrupted upload keeps its
+  progress instead of being lost.
+- Individual failures are retried and then skipped, so one bad file cannot abort the
+  whole run; the next sync picks it up.
+- If the one-hour Google token is about to expire mid-upload, sync stops cleanly and
+  asks you to reconnect instead of failing every remaining file.
+
 ## Cost & privacy
 
 Zero cost and zero infrastructure for you: there is no server and no database. Each

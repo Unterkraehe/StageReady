@@ -1,5 +1,5 @@
 /* Stage Ready — service worker (offline app shell + runtime cache) */
-const VERSION = 'stage-ready-v13';
+const VERSION = 'stage-ready-v14';
 const CORE = [
   './',
   './index.html',
@@ -67,3 +67,20 @@ self.addEventListener('fetch', (e) => {
     })
   );
 });
+
+/* ---------------- background sync ----------------
+   The sync engine is DOM-free, so it can run here with no page open.
+   Chrome/Android only: Safari/iOS implements neither Background Sync nor
+   Periodic Background Sync, so there the app syncs while it is open. */
+try{
+  importScripts('./js/09-sync.js');
+  self.addEventListener('sync', (e) => {
+    if (e.tag === 'sr-sync') e.waitUntil(runSync(false).catch(() => {}));
+  });
+  self.addEventListener('periodicsync', (e) => {
+    if (e.tag === 'sr-periodic') e.waitUntil(runSync(false).catch(() => {}));
+  });
+}catch(err){
+  // never let a sync problem break offline caching
+  console.warn('sync engine unavailable in SW:', err);
+}

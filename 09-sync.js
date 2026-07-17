@@ -7,31 +7,83 @@
    Remote layout:  StageReady/ manifest.json
                                au_<snippetId>_r<rev>   (audio, immutable per rev)
                                rec_<recordingId>       (practice recordings)
+
    Merge: additive. Records are ADDED or UPDATED (newest-wins per
    record via updatedAt) — sync NEVER deletes. Drive keeps every file
    as an archive; a snippet removed on one device stays on Drive and on
    the other devices. Local tombstones (never uploaded) only stop the
    device that removed something from getting it back.
+
    Auth: OAuth2 token via full-page redirect (works in installed
-   PWAs where popups don't). Tokens last ~1h; re-auth is a quick
-   bounce when the user is already signed in to Google.
+   PWAs where popups don't). Tokens last ~1h.
+
+   THIS FILE MUST STAY DOM-FREE AT TOP LEVEL: sw.js importScripts() it so
+   the same engine can run as a background sync. Anything touching
+   document/window/localStorage must be guarded or page-only.
    ============================================================ */
 
 /* One-time setup (app owner): create an OAuth Client ID of type
    "Web application" at console.cloud.google.com → Credentials, add your
    site origin (e.g. https://username.github.io) under "Authorized
    JavaScript origins" AND the full app URL under "Authorized redirect
-   URIs", enable the "Google Drive API", then paste the Client ID here: */
+   URIs", enable the "Google Drive API", then paste the Client ID here.
+   Full instructions: SYNC_SETUP.md */
 const GDRIVE_CLIENT_ID = '';   // e.g. '1234567890-abc123.apps.googleusercontent.com'
 
 const SYNC={
-  remote:null, running:false, queued:false, status:'idle', detail:'',
+  running:false, queued:false, status:'idle', detail:'',
   lastError:null, auto:true, clientId:GDRIVE_CLIENT_ID, timer:null,
 };
+const IS_PAGE = (typeof window!=='undefined' && typeof document!=='undefined');
 
-/* ---------------- token handling (redirect flow) ---------------- */
+/* ---------------- self-contained IndexedDB access ----------------
+   09-sync runs in the page AND inside the service worker, which cannot
+   load 01-core.js (DOM-bound). So it opens the same database itself. */
+const SDB_NAME='stageReadyDB', SDB_VER=2;
+let _sdb=null;
+function sdbOpen(){
+  return new Promise((res,rej)=>{
+    if(_sdb) return res(_sdb);
+    const r=indexedDB.open(SDB_NAME,SDB_VER);
+    r.onupgradeneeded=e=>{
+      const db=e.target.result;
+      ['snippets','setlists','tombstones'].forEach(s=>{ if(!db.objectStoreNames.contains(s)) db.createObjectStore(s,{keyPath:'id'}); });
+      if(!db.objectStoreNames.contains('meta')) db.createObjectStore('meta',{keyPath:'key'});
+    };
+    r.onsuccess=()=>{ _sdb=r.result; res(_sdb); };
+    r.onerror=()=>rej(r.error);
+  });
+}
+function sdbReq(q){ return new Promise((res,rej)=>{ q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error); }); }
+const SDB={
+  async all(store){ const db=await sdbOpen(); return sdbReq(db.transaction(store).objectStore(store).getAll()); },
+  async get(store,key){ const db=await sdbOpen(); return sdbReq(db.transaction(store).objectStore(store).get(key)); },
+  async put(store,val){ const db=await sdbOpen(); return sdbReq(db.transaction(store,'readwrite').objectStore(store).put(val)); },
+  async metaGet(k,d){ const r=await SDB.get('meta',k); return r&&r.value!==undefined?r.value:d; },
+  async metaSet(k,v){ return SDB.put('meta',{key:k,value:v}); },
+};
+
+/* ---------------- token handling (redirect flow) ----------------
+   Stored in IndexedDB (not localStorage) so the service worker can read it. */
+let _tok=null;                                  // {t, exp}
+async function syncLoadToken(){
+  if(_tok) return _tok;
+  _tok=await SDB.metaGet('gd_token',null);
+  if(!_tok && IS_PAGE){                          // migrate pre-v14 localStorage token
+    try{
+      const o=JSON.parse(localStorage.getItem('sr_gd_token')||'null');
+      if(o&&o.exp>Date.now()){ _tok=o; await SDB.metaSet('gd_token',o); }
+      localStorage.removeItem('sr_gd_token');
+    }catch(e){}
+  }
+  return _tok;
+}
+function syncToken(){ return (_tok && _tok.exp>Date.now())? _tok.t : null; }
+function syncTokenExpiresIn(){ return _tok? _tok.exp-Date.now() : 0; }
+async function syncStoreToken(t,exp){ _tok={t,exp}; await SDB.metaSet('gd_token',_tok); }
+function syncSignedIn(){ return !!syncToken() || !!globalThis.__mockDriveStore; }
 function syncParseRedirect(){
-  if(!location.hash || location.hash.indexOf('access_token=')<0) return;
+  if(!IS_PAGE || !location.hash || location.hash.indexOf('access_token=')<0) return;
   const p=new URLSearchParams(location.hash.slice(1));
   const tok=p.get('access_token'), exp=+p.get('expires_in')||3600, st=p.get('state')||'';
   history.replaceState(null,'',location.pathname+location.search);
@@ -39,19 +91,13 @@ function syncParseRedirect(){
   const saved=sessionStorage.getItem('sr_oauth_state');
   if(saved && st && saved!==st){ console.warn('OAuth state mismatch'); return; }
   sessionStorage.removeItem('sr_oauth_state');
-  localStorage.setItem('sr_gd_token', JSON.stringify({t:tok, exp:Date.now()+(exp-60)*1000}));
+  _tok={t:tok, exp:Date.now()+(exp-60)*1000};
+  SDB.metaSet('gd_token',_tok);
   SYNC._resumeAfterAuth=true;
 }
-function syncToken(){
-  try{
-    const o=JSON.parse(localStorage.getItem('sr_gd_token')||'null');
-    if(o && o.exp>Date.now()) return o.t;
-  }catch(e){}
-  return null;
-}
-function syncSignedIn(){ return !!syncToken() || !!window.__mockDriveStore; }
 function syncAuthRedirect(){
-  if(!SYNC.clientId){ toast('Set up a Google Client ID first (see Settings)'); return; }
+  if(!IS_PAGE) return;
+  if(!SYNC.clientId){ toast('Set up a Google Client ID first (see SYNC_SETUP.md)'); return; }
   const st=uid();
   sessionStorage.setItem('sr_oauth_state',st);
   const u=new URL('https://accounts.google.com/o/oauth2/v2/auth');
@@ -63,12 +109,27 @@ function syncAuthRedirect(){
   u.searchParams.set('state',st);
   location.assign(u.toString());
 }
-function syncSignOut(){
+async function syncSignOut(){
   const t=syncToken();
-  localStorage.removeItem('sr_gd_token');
-  DB.metaSet('gd_email','');
+  _tok=null;
+  await SDB.metaSet('gd_token',null);
+  await SDB.metaSet('gd_email','');
   if(t){ try{ fetch('https://oauth2.googleapis.com/revoke?token='+encodeURIComponent(t),{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'}}); }catch(e){} }
   updateSyncUI();
+}
+
+/* retry transient failures; auth errors bubble out immediately */
+async function syncRetry(fn,tries=3){
+  let last;
+  for(let i=0;i<tries;i++){
+    try{ return await fn(); }
+    catch(e){
+      last=e;
+      if(e.code===401||e.code===403) throw e;
+      if(i<tries-1) await new Promise(r=>setTimeout(r,500*Math.pow(2,i)));
+    }
+  }
+  throw last;
 }
 
 /* ---------------- Drive REST adapter ---------------- */
@@ -81,24 +142,48 @@ class DriveRemote{
     if(!r.ok){ const e=new Error('Drive error '+r.status); e.code=r.status; throw e; }
     return r;
   }
+  async _folderUsable(id){
+    try{
+      const d=await(await this._fetch(`https://www.googleapis.com/drive/v3/files/${id}?fields=id,trashed`)).json();
+      return !d.trashed;
+    }catch(e){ if(e.code===404||e.code===403) return false; throw e; }
+  }
   async init(){
-    // find or create the app folder, then index its files (name → id)
-    const q=encodeURIComponent("name='StageReady' and mimeType='application/vnd.google-apps.folder' and trashed=false");
-    let r=await this._fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`);
-    let d=await r.json();
-    if(d.files && d.files.length) this.folderId=d.files[0].id;
-    else{
-      r=await this._fetch('https://www.googleapis.com/drive/v3/files',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({name:'StageReady',mimeType:'application/vnd.google-apps.folder'})});
-      this.folderId=(await r.json()).id;
+    /* The folder id is remembered. Picking it fresh every run is what made
+       uploads restart: if two StageReady folders ever exist (two devices'
+       first sync racing, or a create whose response was lost), an unordered
+       search can return a different one each launch — so half the library
+       looks "missing" and gets re-uploaded, forever. */
+    let fid=await SDB.metaGet('gd_folder','');
+    if(fid && !(await this._folderUsable(fid))) fid='';
+    if(!fid){
+      const q=encodeURIComponent("name='StageReady' and mimeType='application/vnd.google-apps.folder' and trashed=false");
+      const d=await(await this._fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&orderBy=createdTime&fields=files(id,name,createdTime)`)).json();
+      if(d.files && d.files.length){
+        fid=d.files[0].id;                                    // oldest = canonical
+        if(d.files.length>1) console.warn('Multiple StageReady folders found; using the oldest.');
+      }else{
+        const r=await this._fetch('https://www.googleapis.com/drive/v3/files',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({name:'StageReady',mimeType:'application/vnd.google-apps.folder'})});
+        fid=(await r.json()).id;
+      }
+      await SDB.metaSet('gd_folder',fid);
     }
+    /* A falsy folder id would make the children query match nothing (so every
+       file looks missing) AND upload into limbo — i.e. re-upload the whole
+       library on every launch, forever. Fail loudly instead. */
+    if(!fid) throw new Error('Drive folder unavailable');
+    this.folderId=fid;
+    await this.refreshList();
+  }
+  async refreshList(){
     this.files={};
     let pageToken='';
     do{
       const fq=encodeURIComponent(`'${this.folderId}' in parents and trashed=false`);
-      const url=`https://www.googleapis.com/drive/v3/files?q=${fq}&pageSize=1000&fields=nextPageToken,files(id,name,size)`+(pageToken?`&pageToken=${pageToken}`:'');
+      const url=`https://www.googleapis.com/drive/v3/files?q=${fq}&pageSize=1000&fields=nextPageToken,files(id,name)`+(pageToken?`&pageToken=${pageToken}`:'');
       const res=await(await this._fetch(url)).json();
-      (res.files||[]).forEach(f=>this.files[f.name]=f.id);
+      (res.files||[]).forEach(f=>{ if(!(f.name in this.files)) this.files[f.name]=f.id; });
       pageToken=res.nextPageToken||'';
     }while(pageToken);
   }
@@ -131,11 +216,6 @@ class DriveRemote{
     const r=await this._fetch(`https://www.googleapis.com/drive/v3/files/${this.files[name]}?alt=media`);
     return r.blob();
   }
-  async deleteBlob(name){
-    if(!this.has(name)) return;
-    await this._fetch(`https://www.googleapis.com/drive/v3/files/${this.files[name]}`,{method:'DELETE'});
-    delete this.files[name];
-  }
   async userEmail(){
     try{
       const r=await this._fetch('https://www.googleapis.com/drive/v3/about?fields=user');
@@ -144,9 +224,7 @@ class DriveRemote{
   }
 }
 
-/* ---------------- Mock adapter (tests / development) ----------------
-   Activated when window.__mockDriveStore exists. Same interface; blobs
-   held as base64 strings so a test can carry the store across pages. */
+/* ---------------- Mock adapter (tests / development) ---------------- */
 class MockRemote{
   constructor(store){ this.s=store; this.s.files=this.s.files||{}; }
   async init(){ if(this.s.failAuthOnce){ this.s.failAuthOnce=false; const e=new Error('unauthorized'); e.code=401; throw e; } }
@@ -165,7 +243,6 @@ class MockRemote{
     for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
     return new Blob([arr],{type:f.mime});
   }
-  async deleteBlob(name){ delete this.s.files[name]; }
   async userEmail(){ return 'mock@test'; }
 }
 
@@ -184,15 +261,16 @@ function setlistToManifest(sl){
 }
 
 /* ---------------- the sync engine ---------------- */
-function syncSetStatus(st,detail){
-  SYNC.status=st; SYNC.detail=detail||'';
-  updateSyncUI();
-}
+function syncSetStatus(st,detail){ SYNC.status=st; SYNC.detail=detail||''; updateSyncUI(); }
 async function runSync(manual){
   if(SYNC.running){ SYNC.queued=true; return; }
-  if(!navigator.onLine && !window.__mockDriveStore){ if(manual) toast('You are offline'); return; }
+  if(typeof navigator!=='undefined' && navigator.onLine===false && !globalThis.__mockDriveStore){
+    if(manual && typeof toast==='function') toast('You are offline');
+    return;
+  }
+  await syncLoadToken();
   let remote;
-  if(window.__mockDriveStore) remote=new MockRemote(window.__mockDriveStore);
+  if(globalThis.__mockDriveStore) remote=new MockRemote(globalThis.__mockDriveStore);
   else{
     const tok=syncToken();
     if(!tok){ if(manual) syncAuthRedirect(); return; }
@@ -203,11 +281,11 @@ async function runSync(manual){
   try{
     await remote.init();
     syncSetStatus('sync','Reading remote…');
-    const man=(await remote.readJSON('manifest.json'))||{v:1,snippets:[],setlists:[],tombstones:[]};
+    const man=(await remote.readJSON('manifest.json'))||{v:1,snippets:[],setlists:[]};
 
-    const locSnips=await DB.getAll('snippets');
-    const locSets=await DB.getAll('setlists');
-    const locTombs=await DB.getAll('tombstones');
+    const locSnips=await SDB.all('snippets');
+    const locSets=await SDB.all('setlists');
+    const locTombs=await SDB.all('tombstones');
 
     /* ---- ADDITIVE MERGE: sync only ever ADDS or UPDATES ----
        Nothing is removed from Drive, and nothing is removed from any other
@@ -216,8 +294,6 @@ async function runSync(manual){
     const removedHere={}; locTombs.forEach(t=>removedHere[t.id]=t);
 
     const plan={ dlSnips:[], dlSets:[] };
-    // the manifest is the union of everything known — remote entries are the
-    // baseline, local records replace them only when they are newer
     const finalSnips={}, finalSets={};
     (man.snippets||[]).forEach(r=>finalSnips[r.id]=r);
     (man.setlists||[]).forEach(r=>finalSets[r.id]=r);
@@ -243,6 +319,12 @@ async function runSync(manual){
       plan.dlSets.push(finalSets[id]);
     }
 
+    const writeManifest=()=>remote.writeJSON('manifest.json',{
+      v:1, updatedAt:Date.now(),
+      snippets:Object.values(finalSnips).map(snipToManifest),
+      setlists:Object.values(finalSets).map(setlistToManifest),
+    });
+
     // ---- download remote-won snippets (records + blobs) ----
     let step=0, steps=plan.dlSnips.length;
     for(const r of plan.dlSnips){
@@ -250,8 +332,8 @@ async function runSync(manual){
       const local=locSnips.find(s=>s.id===r.id);
       let audioFile=local&&local.audioFile, haveRev=local?(local.audioRev||0):-1;
       if(haveRev!==(r.audioRev||0) || !audioFile){
-        const b=await remote.downloadBlob(audioName(r));
-        if(!b) continue;                    // blob missing remotely: skip record
+        const b=await syncRetry(()=>remote.downloadBlob(audioName(r)));
+        if(!b) continue;                    // blob not on Drive yet: skip, retry next sync
         audioFile=b;
       }
       const recs=[];
@@ -259,18 +341,17 @@ async function runSync(manual){
         const have=local&&(local.recordings||[]).find(x=>x.id===rm.id);
         if(have&&have.blob) recs.push(have);
         else{
-          const rb=await remote.downloadBlob('rec_'+rm.id);
+          const rb=await syncRetry(()=>remote.downloadBlob('rec_'+rm.id));
           if(rb) recs.push({id:rm.id,timestamp:rm.timestamp,dur:rm.dur,blob:rb});
         }
       }
       const rec=Object.assign({},r,{audioFile,recordings:recs});
-      delete rec.audioName;
-      await DB.putRaw('snippets',rec);
+      await SDB.put('snippets',rec);
       finalSnips[rec.id]=rec;
     }
-    for(const r of plan.dlSets){ await DB.putRaw('setlists',r); finalSets[r.id]=r; }
+    for(const r of plan.dlSets){ await SDB.put('setlists',r); finalSets[r.id]=r; }
 
-    // ---- upload blobs for every final snippet that Drive is missing ----
+    // ---- upload blobs Drive is missing ----
     const ups=[];
     for(const id in finalSnips){
       const s=finalSnips[id];
@@ -280,105 +361,163 @@ async function runSync(manual){
       }
     }
     step=0; steps=ups.length;
+    let done=0, failed=0, paused=false;
     for(const [kind,o] of ups){
+      // a token dying mid-upload would 401 every remaining file; stop while
+      // the progress so far is safely recorded instead
+      if(!globalThis.__mockDriveStore && syncTokenExpiresIn()<60000){ paused=true; break; }
       step++;
-      if(kind==='audio'){ syncSetStatus('sync',`Uploading ${step}/${steps}: ${o.name}`); await remote.uploadBlob(audioName(o),o.audioFile,o.audioType); }
-      else { syncSetStatus('sync',`Uploading ${step}/${steps}: recording`); await remote.uploadBlob('rec_'+o.id,o.blob); }
+      const label=kind==='audio'? o.name : 'recording';
+      syncSetStatus('sync',`Uploading ${step}/${steps}: ${label}`);
+      try{
+        if(kind==='audio') await syncRetry(()=>remote.uploadBlob(audioName(o),o.audioFile,o.audioType));
+        else await syncRetry(()=>remote.uploadBlob('rec_'+o.id,o.blob));
+        done++;
+        // checkpoint: makes partial progress durable, so an interrupted first
+        // sync of a big library never starts over
+        if(done%25===0) await writeManifest();
+      }catch(e){
+        if(e.code===401) throw e;
+        failed++;                              // skip this file, keep going
+      }
     }
 
     // ---- write merged manifest (union — no entry is ever dropped) ----
     syncSetStatus('sync','Finalizing…');
-    await remote.writeJSON('manifest.json',{
-      v:1, updatedAt:Date.now(),
-      snippets:Object.values(finalSnips).map(snipToManifest),
-      setlists:Object.values(finalSets).map(setlistToManifest),
-    });
+    await syncRetry(writeManifest);
     // Nothing on Drive is ever deleted: old audio revisions and files whose
     // snippet was removed on a device stay as an archive.
 
-    // ---- refresh app ----
-    if(plan.dlSnips.length||plan.dlSets.length){
+    // ---- refresh app (page only) ----
+    if((plan.dlSnips.length||plan.dlSets.length) && typeof reloadData==='function'){
       await reloadData();
-      renderDrawer(); renderLibrary();
+      if(typeof renderDrawer==='function') renderDrawer();
+      if(typeof renderLibrary==='function') renderLibrary();
     }
-    await DB.metaSet('lastSync',Date.now());
-    if(!window.__mockDriveStore){
-      const em=await DB.metaGet('gd_email','');
-      if(!em){ const e2=await remote.userEmail(); if(e2) DB.metaSet('gd_email',e2); }
+    await SDB.metaSet('lastSync',Date.now());
+    if(!globalThis.__mockDriveStore){
+      const em=await SDB.metaGet('gd_email','');
+      if(!em){ const e2=await remote.userEmail(); if(e2) await SDB.metaSet('gd_email',e2); }
     }
-    syncSetStatus('ok','');
+    if(paused) syncSetStatus('error','Sign-in expired — reconnect to finish');
+    else if(failed) syncSetStatus('error',failed+' file(s) failed — will retry');
+    else syncSetStatus('ok','');
+    syncNotifyClients();
   }catch(err){
     console.warn('sync failed:',err);
     SYNC.lastError=err;
     if(err.code===401){
-      localStorage.removeItem('sr_gd_token');
+      _tok=null; await SDB.metaSet('gd_token',null);
       syncSetStatus('error','Signed out — reconnect to sync');
       if(manual) syncAuthRedirect();
     } else syncSetStatus('error', err.message||'Sync failed');
+    syncRegisterBG();                          // let the SW retry in the background
   }finally{
     SYNC.running=false;
     if(SYNC.queued){ SYNC.queued=false; setTimeout(()=>runSync(false),1500); }
   }
 }
 
+/* tell open pages to refresh after a background (service-worker) sync */
+function syncNotifyClients(){
+  if(IS_PAGE || typeof clients==='undefined') return;
+  clients.matchAll({includeUncontrolled:true}).then(cs=>cs.forEach(c=>c.postMessage({sr:'synced'})));
+}
+
 /* ---------------- triggers ---------------- */
+async function syncRegisterBG(){
+  if(!IS_PAGE || !('serviceWorker' in navigator)) return;
+  try{
+    const reg=await navigator.serviceWorker.ready;
+    if(reg.sync) await reg.sync.register('sr-sync');
+  }catch(e){}
+}
+async function syncRegisterPeriodic(){
+  if(!IS_PAGE || !('serviceWorker' in navigator)) return;
+  try{
+    const reg=await navigator.serviceWorker.ready;
+    if(!reg.periodicSync) return;
+    const st=await navigator.permissions.query({name:'periodic-background-sync'});
+    if(st.state!=='granted') return;
+    await reg.periodicSync.register('sr-periodic',{minInterval:12*60*60*1000});
+  }catch(e){}
+}
 function syncQueue(store){
   if(store==='meta') return;
   if(!SYNC.auto || !syncSignedIn()) return;
   clearTimeout(SYNC.timer);
-  SYNC.timer=setTimeout(()=>runSync(false),8000);
+  SYNC.timer=setTimeout(()=>{ runSync(false); syncRegisterBG(); },8000);
 }
-document.addEventListener('visibilitychange',async()=>{
-  if(document.visibilityState!=='visible' || !SYNC.auto || !syncSignedIn()) return;
-  const last=await DB.metaGet('lastSync',0);
-  if(Date.now()-last>5*60*1000) runSync(false);
-});
+if(IS_PAGE){
+  document.addEventListener('visibilitychange',async()=>{
+    if(document.visibilityState!=='visible' || !SYNC.auto || !syncSignedIn()) return;
+    const last=await SDB.metaGet('lastSync',0);
+    if(Date.now()-last>5*60*1000) runSync(false);
+  });
+}
 
-/* ---------------- UI ---------------- */
+/* ---------------- UI (page only) ---------------- */
 function syncStatusText(){
   if(SYNC.status==='sync') return SYNC.detail||'Syncing…';
   if(SYNC.status==='error') return SYNC.detail||'Sync failed';
   return '';
 }
 async function renderSyncSection(container){
+  await syncLoadToken();
   const signed=syncSignedIn();
-  const email=signed? (window.__mockDriveStore?'mock@test':await DB.metaGet('gd_email','')) : '';
-  const last=await DB.metaGet('lastSync',0);
-  const needsSetup=!SYNC.clientId && !window.__mockDriveStore;
+  const email=signed? (globalThis.__mockDriveStore?'mock@test':await SDB.metaGet('gd_email','')) : '';
+  const last=await SDB.metaGet('lastSync',0);
+  const needsSetup=!SYNC.clientId && !globalThis.__mockDriveStore;
   container.innerHTML=`
     <div class="set-sec-label" style="margin-top:20px">Sync — Google Drive</div>
-    ${needsSetup? `<p class="muted" style="font-size:12.5px;margin:4px 2px 10px">Not configured. The app owner must create a (free) Google OAuth Client ID and paste it into <b>js/09-sync.js</b>. Instructions are at the top of that file.</p>`:''}
+    ${needsSetup? `<p class="muted" style="font-size:12.5px;margin:4px 2px 10px">Not configured. The app owner must create a (free) Google OAuth Client ID and paste it into <b>js/09-sync.js</b> — see SYNC_SETUP.md.</p>`:''}
     <div id="_syncStatus" class="muted" style="font-size:13px;margin:2px 2px 10px">
       ${signed? `Connected${email?' as <b>'+escapeHtml(email)+'</b>':''}${last?' · last sync '+new Date(last).toLocaleTimeString():''}` : 'Not connected. Your library stays on this device.'}
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       ${signed? `<button class="btn accent" id="_syncNow" style="flex:1"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6"/></svg>Sync now</button>
                  <button class="btn ghost" id="_syncOut">Disconnect</button>`
-              : `<button class="btn accent" id="_syncIn" style="flex:1" ${needsSetup?'disabled style="flex:1;opacity:.45"':''}><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M5 21h14"/></svg>Connect Google Drive</button>`}
+              : `<button class="btn accent" id="_syncIn" style="flex:1${needsSetup?';opacity:.45':''}" ${needsSetup?'disabled':''}><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M5 21h14"/></svg>Connect Google Drive</button>`}
     </div>
     ${signed? `<label class="check-row ${SYNC.auto?'on':''}" id="_syncAuto" style="cursor:pointer;margin-top:10px">
       <span class="check-box"><svg viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></svg></span>
-      <span style="flex:1;font-family:var(--font-display);font-size:15px">Sync automatically</span></label>`:''}`;
+      <span style="flex:1"><span style="font-family:var(--font-display);font-size:15px;display:block">Sync automatically</span>
+      <span class="muted" style="font-size:12px">On launch, after changes, and in the background where the browser allows it.</span></span></label>`:''}`;
   const now=$('#_syncNow'); if(now) now.onclick=()=>runSync(true);
   const sin=$('#_syncIn'); if(sin&&!needsSetup) sin.onclick=()=>syncAuthRedirect();
-  const out=$('#_syncOut'); if(out) out.onclick=()=>{ syncSignOut(); renderSyncSection(container); };
-  const au=$('#_syncAuto'); if(au) au.onclick=()=>{ SYNC.auto=!SYNC.auto; au.classList.toggle('on',SYNC.auto); DB.metaSet('autosync',SYNC.auto); };
+  const out=$('#_syncOut'); if(out) out.onclick=async()=>{ await syncSignOut(); renderSyncSection(container); };
+  const au=$('#_syncAuto'); if(au) au.onclick=()=>{ SYNC.auto=!SYNC.auto; au.classList.toggle('on',SYNC.auto); SDB.metaSet('autosync',SYNC.auto); if(SYNC.auto) syncRegisterPeriodic(); };
 }
 function updateSyncUI(){
+  if(!IS_PAGE) return;
   const el=$('#_syncStatus');
   if(el && SYNC.status==='sync') el.innerHTML='⟳ '+escapeHtml(syncStatusText());
   else if(el && SYNC.status==='error') el.innerHTML='<span style="color:var(--accent)">'+escapeHtml(syncStatusText())+'</span>';
-  else if(el && SYNC.status==='ok'){ DB.metaGet('lastSync',0).then(l=>{ el.innerHTML='Synced · '+new Date(l).toLocaleTimeString(); }); }
+  else if(el && SYNC.status==='ok'){ SDB.metaGet('lastSync',0).then(l=>{ el.innerHTML='Synced · '+new Date(l).toLocaleTimeString(); }); }
   const dot=$('#syncDot');
   if(dot){ dot.className='sync-dot '+SYNC.status; dot.style.display=syncSignedIn()?'block':'none'; }
 }
 
-/* ---------------- boot ---------------- */
-syncParseRedirect();
-(async()=>{
-  SYNC.auto=await DB.metaGet('autosync',true);
-  if(syncSignedIn()){
-    setTimeout(()=>runSync(false), SYNC._resumeAfterAuth?600:2500);
+/* ---------------- boot (page only) ---------------- */
+if(IS_PAGE){
+  syncParseRedirect();
+  (async()=>{
+    SYNC.auto=await SDB.metaGet('autosync',true);
+    await syncLoadToken();
+    if(syncSignedIn() && (SYNC.auto || SYNC._resumeAfterAuth)){
+      setTimeout(()=>runSync(false), SYNC._resumeAfterAuth?600:2500);
+      syncRegisterPeriodic();
+    }
+    updateSyncUI();
+  })();
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.addEventListener('message',async e=>{
+      if(e.data && e.data.sr==='synced' && typeof reloadData==='function'){
+        await reloadData();
+        if(typeof renderDrawer==='function') renderDrawer();
+        if(typeof renderLibrary==='function') renderLibrary();
+        updateSyncUI();
+      }
+    });
   }
-  updateSyncUI();
-})();
+}
