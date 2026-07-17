@@ -2,7 +2,7 @@
    PWA — service worker + install
    ============================================================ */
 if('serviceWorker' in navigator && (location.protocol==='https:'||location.protocol==='http:')){
-  window.addEventListener('load',()=>{ navigator.serviceWorker.register('sw.js').catch(e=>console.warn('SW registration failed:',e)); });
+  window.addEventListener('load',()=>{ navigator.serviceWorker.register('sw.js',{updateViaCache:'none'}).catch(e=>console.warn('SW registration failed:',e)); });
 }
 let _deferredPrompt=null;
 window.addEventListener('beforeinstallprompt',e=>{ e.preventDefault(); _deferredPrompt=e; $('#installBtn').style.display='flex'; });
@@ -99,13 +99,18 @@ async function reloadData(){
   state.setlists=await DB.getAll('setlists');
   state.setlists.sort((a,b)=>(a.id===LIBRARY_ID?-1:b.id===LIBRARY_ID?1:(a.order??1e9)-(b.order??1e9)));
   // ensure library setlist exists & contains everything
+  // NOTE: this repair is derived state, not a user edit — it must use putRaw so
+  // it neither stamps updatedAt nor queues a sync. Otherwise two devices holding
+  // different snippets would repair→upload→repair→upload forever.
   let lib=getLibrary();
-  if(!lib){ lib={ id:LIBRARY_ID, name:'Library', snippetIds:state.snippets.map(s=>s.id) }; state.setlists.push(lib); await DB.put('setlists',lib); }
+  if(!lib){ lib={ id:LIBRARY_ID, name:'Library', snippetIds:state.snippets.map(s=>s.id) }; state.setlists.push(lib); await DB.putRaw('setlists',lib); }
   else {
     let changed=false;
     state.snippets.forEach(s=>{ if(!lib.snippetIds.includes(s.id)){ lib.snippetIds.push(s.id); changed=true; } });
+    const before=lib.snippetIds.length;
     lib.snippetIds=lib.snippetIds.filter(id=>state.snippets.some(s=>s.id===id));
-    if(changed) await DB.put('setlists',lib);
+    if(before!==lib.snippetIds.length) changed=true;
+    if(changed) await DB.putRaw('setlists',lib);
   }
   reindex();
 }
