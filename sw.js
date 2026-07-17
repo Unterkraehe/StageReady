@@ -1,5 +1,5 @@
 /* Stage Ready — service worker (offline app shell + runtime cache) */
-const VERSION = 'stage-ready-v12';
+const VERSION = 'stage-ready-v13';
 const CORE = [
   './',
   './index.html',

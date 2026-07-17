@@ -49,8 +49,15 @@ for development). For `file://` it won't work — serve over http.
 - **Audio files and recordings** upload once and are referenced by ID; they only
   transfer again if you replace a file. A second device downloads them on the next
   sync so it's fully offline-ready.
-- **Merging** is newest-wins per record (every edit stamps a timestamp). **Deletes**
-  leave a tombstone so a removal on one device doesn't get resurrected by another.
+- **Merging is additive: sync only ever adds or updates — it never deletes.** Every
+  edit stamps a timestamp and the newest version of a record wins. Nothing is ever
+  removed from Drive or from another device by syncing, so Drive doubles as a
+  complete archive of everything you've ever had.
+- **Deleting is local.** Removing a snippet on one device removes it *there only*;
+  it stays in Drive and on your other devices, and sync won't restore it to the
+  device you removed it from. To remove something everywhere, delete it on each
+  device (and delete the file in the Drive `StageReady` folder if you want the
+  space back — old audio versions are kept there too).
 - **Offline-first:** IndexedDB on the device is always the source of truth and the
   app is fully usable with no connection; sync is a background reconciliation that
   runs on launch, after edits (debounced), when you return to the tab, and on demand
