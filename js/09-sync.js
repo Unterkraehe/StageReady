@@ -28,7 +28,7 @@
    JavaScript origins" AND the full app URL under "Authorized redirect
    URIs", enable the "Google Drive API", then paste the Client ID here.
    Full instructions: SYNC_SETUP.md */
-const GDRIVE_CLIENT_ID = '824290905313-trfb5eb4ks7sccrli66p3kstdm47tcnp.apps.googleusercontent.com';   // e.g. '1234567890-abc123.apps.googleusercontent.com'
+const GDRIVE_CLIENT_ID = '';   // e.g. '1234567890-abc123.apps.googleusercontent.com'
 
 const SYNC={
   running:false, queued:false, status:'idle', detail:'',
@@ -125,8 +125,9 @@ async function syncRetry(fn,tries=3){
     try{ return await fn(); }
     catch(e){
       last=e;
-      if(e.code===401||e.code===403) throw e;
-      if(i<tries-1) await new Promise(r=>setTimeout(r,500*Math.pow(2,i)));
+      if(e.code===401) throw e;                       // only auth is fatal
+      // 403 from Drive is normally a rate limit; back off and try again
+      if(i<tries-1) await new Promise(r=>setTimeout(r,800*Math.pow(2,i)));
     }
   }
   throw last;
@@ -199,8 +200,14 @@ class DriveRemote{
   }
   async uploadBlob(name,blob,mime){
     mime=mime||blob.type||'application/octet-stream';
-    if(this.has(name)){
-      await this._fetch(`https://www.googleapis.com/upload/drive/v3/files/${this.files[name]}?uploadType=media`,
+    const id=this.files[name];
+    /* Drive's multipart/media endpoints only accept files up to 5 MB — real
+       practice audio is routinely bigger, and those uploads simply fail. Send
+       anything sizeable through a resumable session instead, which also
+       tolerates a flaky mobile connection (each chunk can be retried). */
+    if(blob.size>4*1024*1024) return this._resumable(name,blob,mime,id);
+    if(id){
+      await this._fetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`,
         {method:'PATCH',headers:{'Content-Type':mime},body:blob});
       return;
     }
@@ -210,6 +217,36 @@ class DriveRemote{
     fd.append('file',blob);
     const r=await this._fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',{method:'POST',body:fd});
     this.files[name]=(await r.json()).id;
+  }
+  async _resumable(name,blob,mime,existingId){
+    const start=existingId
+      ? `https://www.googleapis.com/upload/drive/v3/files/${existingId}?uploadType=resumable`
+      : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id';
+    const r=await this._fetch(start,{
+      method: existingId?'PATCH':'POST',
+      headers:{'Content-Type':'application/json; charset=UTF-8','X-Upload-Content-Type':mime,'X-Upload-Content-Length':String(blob.size)},
+      body: existingId? '{}' : JSON.stringify({name,parents:[this.folderId]}),
+    });
+    const session=r.headers.get('Location')||r.headers.get('location');
+    if(!session) throw new Error('no upload session (CORS?)');
+    const CHUNK=8*1024*1024;
+    let off=0;
+    while(off<blob.size){
+      const end=Math.min(off+CHUNK,blob.size);
+      const res=await fetch(session,{method:'PUT',
+        headers:{Authorization:'Bearer '+this.token,'Content-Range':`bytes ${off}-${end-1}/${blob.size}`},
+        body:blob.slice(off,end)});
+      if(res.status===308){                       // chunk stored, Drive wants more
+        const rg=res.headers.get('Range');
+        off = rg? parseInt(rg.split('-')[1],10)+1 : end;
+        continue;
+      }
+      if(res.status===401){ const e=new Error('unauthorized'); e.code=401; throw e; }
+      if(!res.ok){ const e=new Error('Upload failed '+res.status); e.code=res.status; throw e; }
+      const j=await res.json().catch(()=>({}));
+      this.files[name]= j.id || existingId || this.files[name];
+      return;
+    }
   }
   async downloadBlob(name){
     if(!this.has(name)) return null;
@@ -361,7 +398,7 @@ async function runSync(manual){
       }
     }
     step=0; steps=ups.length;
-    let done=0, failed=0, paused=false;
+    let done=0, failed=0, paused=false, lastFail='';
     for(const [kind,o] of ups){
       // a token dying mid-upload would 401 every remaining file; stop while
       // the progress so far is safely recorded instead
@@ -378,7 +415,8 @@ async function runSync(manual){
         if(done%25===0) await writeManifest();
       }catch(e){
         if(e.code===401) throw e;
-        failed++;                              // skip this file, keep going
+        failed++; lastFail=e.message||'error';  // skip this file, keep going
+        console.warn('Sync: upload failed for',label,e);
       }
     }
 
@@ -400,7 +438,7 @@ async function runSync(manual){
       if(!em){ const e2=await remote.userEmail(); if(e2) await SDB.metaSet('gd_email',e2); }
     }
     if(paused) syncSetStatus('error','Sign-in expired — reconnect to finish');
-    else if(failed) syncSetStatus('error',failed+' file(s) failed — will retry');
+    else if(failed) syncSetStatus('error',failed+' of '+steps+' uploads failed ('+lastFail+') — will retry');
     else syncSetStatus('ok','');
     syncNotifyClients();
   }catch(err){
