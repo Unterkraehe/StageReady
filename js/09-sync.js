@@ -28,7 +28,7 @@
    JavaScript origins" AND the full app URL under "Authorized redirect
    URIs", enable the "Google Drive API", then paste the Client ID here.
    Full instructions: SYNC_SETUP.md */
-const GDRIVE_CLIENT_ID = '';   // e.g. '1234567890-abc123.apps.googleusercontent.com'
+const GDRIVE_CLIENT_ID = '824290905313-trfb5eb4ks7sccrli66p3kstdm47tcnp.apps.googleusercontent.com';   // e.g. '1234567890-abc123.apps.googleusercontent.com'
 
 const SYNC={
   running:false, queued:false, status:'idle', detail:'',
